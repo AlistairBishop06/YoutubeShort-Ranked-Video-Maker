@@ -127,11 +127,38 @@ function formatMetric(value: number) {
   }).format(value);
 }
 
+function emojiPackForTitle(value: string) {
+  const lower = value.toLowerCase();
+
+  if (lower.includes("fail") || lower.includes("crashout")) {
+    return ["💀", "😂", "🔥"];
+  }
+
+  if (lower.includes("stream") || lower.includes("twitch") || lower.includes("youtube")) {
+    return ["🎮", "😂", "🔥"];
+  }
+
+  return ["😂", "🔥", "😱"];
+}
+
+function viralVideoTitle(value: string) {
+  const [firstEmoji, secondEmoji] = emojiPackForTitle(value);
+  const cleanTitle = value.trim() || "Top 5 Viral Moments";
+
+  return `${firstEmoji} ${cleanTitle} ${secondEmoji}`;
+}
+
+function downloadFileName(value: string) {
+  const slug = value.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+  return `🔥-${slug || "ranking-short"}-😂.mp4`;
+}
+
 function buildCopyDescription(idea: ViralIdea, selectedCandidates: ViralCandidate[]) {
   const candidates =
     selectedCandidates.length === RANK_COUNT
       ? selectedCandidates
       : idea.candidates.slice(0, RANK_COUNT);
+  const [laughEmoji, fireEmoji, shockEmoji] = emojiPackForTitle(idea.title);
   const featureWords = candidates
     .map((candidate) => candidate.name)
     .filter(Boolean)
@@ -142,28 +169,35 @@ function buildCopyDescription(idea: ViralIdea, selectedCandidates: ViralCandidat
     : ["#TikTokRankings", "#Top5", "#ViralTikTok", "#Shorts", "#YouTubeShorts", "#FYP"];
 
   return [
-    `${idea.title} ranked from #5 to #1.`,
+    `${laughEmoji} ${idea.title} ranked from #5 to #1 ${fireEmoji}`,
+    `${shockEmoji} Wait for #1... it gets WILD.`,
     featureWords
-      ? `Featuring ${featureWords}. Which clip deserves the top spot?`
-      : "Which clip deserves the top spot?",
-    "Watch until the end and comment your winner.",
+      ? `Best moments: ${featureWords} ${laughEmoji}`
+      : `Which clip deserves the top spot? ${laughEmoji}`,
+    "Who got cooked the hardest? Comment your winner 👇",
+    "Subscribe for more funny moments 🏆",
     "",
     hashtags.join(" ")
   ].join("\n");
 }
 
 function fallbackUploadDescription(title: string, entries: RankingEntry[]) {
+  const [laughEmoji, fireEmoji, shockEmoji] = emojiPackForTitle(title);
   const names = entries
     .map((entry) => entry.name.trim())
     .filter(Boolean)
     .slice(0, 5);
 
   return [
-    `${title} ranked from #5 to #1.`,
-    names.length ? `Featuring ${names.join(", ")}. Which clip deserves the top spot?` : "Which clip deserves the top spot?",
-    "Watch until the end and comment your winner.",
+    `${laughEmoji} ${title} ranked from #5 to #1 ${fireEmoji}`,
+    `${shockEmoji} Wait for #1... it gets WILD.`,
+    names.length
+      ? `Best moments: ${names.join(", ")} ${laughEmoji}`
+      : `Which clip deserves the top spot? ${laughEmoji}`,
+    "Who got cooked the hardest? Comment your winner 👇",
+    "Subscribe for more funny moments 🏆",
     "",
-    "#Top5 #ViralTikTok #Shorts #YouTubeShorts #FYP #Trending"
+    "#Top5 #ViralTikTok #FunnyMoments #MustWatch #Shorts #YouTubeShorts #FYP #Trending"
   ].join("\n");
 }
 
@@ -671,10 +705,10 @@ export default function Home() {
 
   async function uploadGeneratedVideo(blob: Blob) {
     const formData = new FormData();
-    const fileName = `${title.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-") || "ranking-short"}.mp4`;
+    const fileName = downloadFileName(title);
 
     formData.set("video", new File([blob], fileName, { type: "video/mp4" }));
-    formData.set("title", title);
+    formData.set("title", viralVideoTitle(title));
     formData.set("description", uploadDescription);
     formData.set("tags", uploadTags.join(","));
 
@@ -908,7 +942,7 @@ export default function Home() {
     const url = URL.createObjectURL(outputBlob);
     const anchor = document.createElement("a");
     anchor.href = url;
-    anchor.download = `${title.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-") || "ranking-short"}.mp4`;
+    anchor.download = downloadFileName(title);
     document.body.appendChild(anchor);
     anchor.click();
     anchor.remove();

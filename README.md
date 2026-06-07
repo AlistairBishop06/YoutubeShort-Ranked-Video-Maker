@@ -1,0 +1,273 @@
+# YouTube Shorts Ranking Video Generator
+
+This is a local Next.js app for generating vertical 9:16 ranking videos from TikTok links.
+
+The app lets you:
+
+- Enter or auto-generate a short-form ranking idea.
+- Find viral TikTok candidates related to YouTubers, streamers, funny moments, fails, and trending topics.
+- Auto-fill 5 ranked clips.
+- Download TikTok clips temporarily with `yt-dlp`.
+- Generate a vertical Shorts/Reels/TikTok-style MP4 with FFmpeg.
+- Keep the main title, current rank, clip label, and ranking list on screen.
+- Preserve audio from the source clips.
+- Generate a copy-paste viral description with emojis and hashtags.
+- Optionally auto-upload the finished MP4 to YouTube.
+
+The app is designed for quick “Top 5” style videos, for example:
+
+- `Top 5 KSI Funny Moments`
+- `Top 5 Speed Funny Moments`
+- `Top 5 CaseOh Funny Moments`
+- `Top 5 Streamer Funny Moments`
+
+## Run The App
+
+Install dependencies:
+
+```bash
+npm install
+```
+
+Start the dev server:
+
+```bash
+npm run dev
+```
+
+Open:
+
+```text
+http://127.0.0.1:3000
+```
+
+## Basic Workflow
+
+1. Click `Find Viral Idea`.
+2. Review the candidate TikToks.
+3. Keep the selected 5, or choose different candidates.
+4. Check the generated title and clip names.
+5. Copy the generated description if needed.
+6. Click `Generate Video`.
+7. Preview the MP4.
+8. Download the finished video.
+
+TikTok clips are downloaded into `.tmp/tiktok-clips` temporarily and cleaned up after generation.
+
+## Auto-Uploading To YouTube
+
+Auto-uploading requires YouTube OAuth credentials. This is because YouTube uploads happen on behalf of your channel, and Google needs permission from that channel.
+
+The app uses the official YouTube Data API `videos.insert` endpoint:
+
+https://developers.google.com/youtube/v3/docs/videos/insert
+
+OAuth docs:
+
+https://developers.google.com/youtube/v3/guides/auth/installed-apps
+
+Google Cloud Console:
+
+https://console.cloud.google.com/
+
+### What You Need
+
+You need these environment variables:
+
+```env
+YOUTUBE_CLIENT_ID=
+YOUTUBE_CLIENT_SECRET=
+YOUTUBE_REFRESH_TOKEN=
+YOUTUBE_PRIVACY_STATUS=private
+YOUTUBE_CATEGORY_ID=24
+```
+
+`YOUTUBE_PRIVACY_STATUS=private` is recommended while testing.
+
+### Step 1: Create A Google Cloud Project
+
+1. Go to https://console.cloud.google.com/
+2. Sign in with the Google account that owns or can access your YouTube channel.
+3. Click the project dropdown at the top.
+4. Click `New Project`.
+5. Name it something like `Shorts Ranking Uploader`.
+6. Click `Create`.
+
+### Step 2: Enable The YouTube Data API
+
+1. Open your new project in Google Cloud Console.
+2. Go to `APIs & Services`.
+3. Click `Library`.
+4. Search for `YouTube Data API v3`.
+5. Open it.
+6. Click `Enable`.
+
+Direct API page:
+
+https://console.cloud.google.com/apis/library/youtube.googleapis.com
+
+### Step 3: Configure OAuth Consent Screen
+
+1. Go to `APIs & Services` → `OAuth consent screen`.
+2. Choose `External` unless you are using a Google Workspace internal app.
+3. Click `Create`.
+4. Fill in:
+   - App name: `Shorts Ranking Uploader`
+   - User support email: your email
+   - Developer contact email: your email
+5. Save and continue.
+6. On scopes, add this scope:
+
+```text
+https://www.googleapis.com/auth/youtube.upload
+```
+
+7. Save and continue.
+8. Add yourself as a test user.
+9. Finish.
+
+Important: If the app is in testing mode, only added test users can authorize it.
+
+### Step 4: Create OAuth Credentials
+
+1. Go to `APIs & Services` → `Credentials`.
+2. Click `Create Credentials`.
+3. Choose `OAuth client ID`.
+4. Application type: `Desktop app`.
+5. Name it `Local Shorts Uploader`.
+6. Click `Create`.
+7. Copy:
+   - Client ID
+   - Client secret
+
+Put them in a local `.env` file:
+
+```env
+YOUTUBE_CLIENT_ID=your_client_id_here
+YOUTUBE_CLIENT_SECRET=your_client_secret_here
+```
+
+Do not commit `.env`.
+
+### Step 5: Get A Refresh Token
+
+The refresh token is the long-lived token the app uses to upload without making you log in every time.
+
+Run this command from the project folder:
+
+```bash
+npx google-oauth-token --client_id YOUR_CLIENT_ID --client_secret YOUR_CLIENT_SECRET --scope https://www.googleapis.com/auth/youtube.upload
+```
+
+If that package is unavailable, use Google OAuth Playground instead:
+
+https://developers.google.com/oauthplayground/
+
+OAuth Playground steps:
+
+1. Open https://developers.google.com/oauthplayground/
+2. Click the gear icon in the top right.
+3. Enable `Use your own OAuth credentials`.
+4. Paste your Client ID and Client Secret.
+5. In the left scope box, enter:
+
+```text
+https://www.googleapis.com/auth/youtube.upload
+```
+
+6. Click `Authorize APIs`.
+7. Sign in with the YouTube channel account.
+8. Approve the permissions.
+9. Click `Exchange authorization code for tokens`.
+10. Copy the `refresh_token`.
+
+Add it to `.env`:
+
+```env
+YOUTUBE_REFRESH_TOKEN=your_refresh_token_here
+```
+
+### Step 6: Finish `.env`
+
+Create `.env` in the project root:
+
+```env
+YOUTUBE_CLIENT_ID=your_client_id_here
+YOUTUBE_CLIENT_SECRET=your_client_secret_here
+YOUTUBE_REFRESH_TOKEN=your_refresh_token_here
+YOUTUBE_PRIVACY_STATUS=private
+YOUTUBE_CATEGORY_ID=24
+```
+
+Privacy options:
+
+```text
+private
+unlisted
+public
+```
+
+Keep it as `private` until you have tested uploads successfully.
+
+### Step 7: Restart The App
+
+After editing `.env`, restart the dev server:
+
+```bash
+npm run dev
+```
+
+The `Auto-upload` toggle should now show that upload is configured.
+
+### Step 8: Test Auto-Upload
+
+1. Open the app.
+2. Turn on `Auto-upload`.
+3. Click `Find Viral Idea`.
+4. Generate a video.
+5. Wait for the MP4 to finish.
+6. The app will upload it to YouTube.
+7. A YouTube link will appear after upload.
+
+The upload uses:
+
+- Generated title with emojis.
+- Generated description with emojis and hashtags.
+- Generated MP4.
+- Privacy status from `YOUTUBE_PRIVACY_STATUS`.
+
+### Common Problems
+
+`YouTube upload is not configured`
+
+One or more env vars are missing. Check `.env`.
+
+`invalid_grant`
+
+The refresh token is invalid, expired, or was created for a different client ID/secret. Generate a new refresh token.
+
+`access_denied`
+
+The Google account did not approve the upload scope, or the user is not added as a test user.
+
+`quotaExceeded`
+
+YouTube uploads use API quota. Wait for quota reset or request more quota in Google Cloud.
+
+Upload succeeds but video is private
+
+That is expected if:
+
+```env
+YOUTUBE_PRIVACY_STATUS=private
+```
+
+Change it to `unlisted` or `public` only when you are ready.
+
+### Security Notes
+
+- Never commit `.env`.
+- Never share your refresh token.
+- Use `private` uploads while testing.
+- If a token leaks, revoke it from your Google account security settings and generate a new one.
+

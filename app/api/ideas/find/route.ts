@@ -540,6 +540,8 @@ function buildHashtags(topic: string, candidates: Candidate[]) {
     "#TikTokRankings",
     "#Top5",
     "#ViralTikTok",
+    "#FunnyMoments",
+    "#MustWatch",
     "#Shorts",
     "#YouTubeShorts",
     "#FYP",
@@ -549,8 +551,27 @@ function buildHashtags(topic: string, candidates: Candidate[]) {
   return [...new Set(relatedTags)].slice(0, 14);
 }
 
+function emojiPack(topic: string) {
+  const clean = cleanTopic(topic);
+
+  if (clean.includes("fail") || clean.includes("crashout")) {
+    return ["💀", "😂", "🔥"];
+  }
+
+  if (clean.includes("stream") || clean.includes("twitch") || clean.includes("youtube")) {
+    return ["🎮", "😂", "🔥"];
+  }
+
+  if (clean.includes("pet") || clean.includes("kid")) {
+    return ["😂", "😱", "🏆"];
+  }
+
+  return ["😂", "🔥", "😱"];
+}
+
 function buildDescription(title: string, topic: string, candidates: Candidate[]) {
   const selectedCandidates = candidates.slice(0, 5);
+  const [laughEmoji, fireEmoji, shockEmoji] = emojiPack(topic);
   const featureWords = selectedCandidates
     .map((candidate) => candidate.name)
     .filter(Boolean)
@@ -561,11 +582,13 @@ function buildDescription(title: string, topic: string, candidates: Candidate[])
   return {
     hashtags,
     description: [
-      `${title} ranked from #5 to #1.`,
+      `${laughEmoji} ${title} ranked from #5 to #1 ${fireEmoji}`,
+      `${shockEmoji} Wait for #1... it gets WILD.`,
       featureWords
-        ? `Featuring ${featureWords}. Which clip deserves the top spot?`
-        : "Which clip deserves the top spot?",
-      "Watch until the end and comment your winner.",
+        ? `Best moments: ${featureWords} ${laughEmoji}`
+        : `Which clip deserves the top spot? ${laughEmoji}`,
+      `Who got cooked the hardest? Comment your winner 👇`,
+      `Subscribe for more funny moments 🏆`,
       "",
       hashtags.join(" ")
     ].join("\n")
