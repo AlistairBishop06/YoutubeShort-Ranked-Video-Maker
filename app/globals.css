@@ -213,6 +213,60 @@ h2 {
   flex: 0 0 auto;
 }
 
+.schedule-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(220px, 0.42fr);
+  gap: 12px;
+  align-items: end;
+}
+
+.schedule-field input {
+  min-height: 48px;
+}
+
+.schedule-status {
+  display: flex;
+  min-height: 48px;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: rgba(0, 0, 0, 0.18);
+  color: var(--muted);
+  padding: 10px 12px;
+}
+
+.schedule-status[data-active="true"] {
+  border-color: rgba(57, 255, 136, 0.48);
+  background: rgba(57, 255, 136, 0.08);
+  color: var(--accent);
+}
+
+.schedule-status div {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.schedule-status strong,
+.schedule-status span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.schedule-status strong {
+  color: var(--text);
+  font-size: 0.82rem;
+  line-height: 1;
+}
+
+.schedule-status span {
+  color: inherit;
+  font-size: 0.76rem;
+  font-weight: 800;
+}
+
 .compact-button {
   min-height: 38px;
   flex: 0 0 auto;
@@ -737,6 +791,7 @@ h2 {
   .idea-top,
   .idea-summary,
   .description-head,
+  .schedule-row,
   .form-grid,
   .entry-card,
   .entry-fields {

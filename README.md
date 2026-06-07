@@ -14,6 +14,7 @@ The app lets you:
 - Generate a copy-paste viral description with emojis and hashtags.
 - Optionally auto-upload the finished MP4 to YouTube.
 - Auto-run every 15 minutes to find a new idea, generate a new video, and upload it.
+- Schedule daily upload slots like `5am, 7am, 9am, 11am`.
 
 The app is designed for quick “Top 5” style videos, for example:
 
@@ -68,6 +69,35 @@ The `Auto-run` toggle in the top bar starts a repeating 15-minute loop:
 Turning on `Auto-run` also turns on `Auto-upload`, because the scheduled loop is designed to publish automatically.
 
 Important: the current version runs this loop in the browser. Keep the app open and keep the computer awake. If the browser tab is closed, the automatic cycle stops.
+
+## Daily Upload Schedule
+
+The `Daily schedule` toggle lets you run the same automated workflow at specific local times every day.
+
+Example schedule:
+
+```text
+5am, 7am, 9am, 11am
+```
+
+You can also use 24-hour times:
+
+```text
+05:00, 07:00, 09:00, 11:00
+```
+
+When `Daily schedule` is on, the app:
+
+1. Waits until the next scheduled local time.
+2. Finds a fresh viral idea.
+3. Generates the ranking video.
+4. Uploads it to YouTube.
+5. Moves to the next scheduled time.
+6. Repeats the same schedule every day.
+
+Turning on `Daily schedule` also turns on `Auto-upload`.
+
+Important: this schedule is browser-based in the current version. Keep the app open and the computer awake. For true background scheduling while the browser is closed, move this workflow to a server cron job or a hosted worker.
 
 ## Auto-Uploading To YouTube
 

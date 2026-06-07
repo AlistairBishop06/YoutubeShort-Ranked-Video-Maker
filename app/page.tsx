@@ -80,6 +80,7 @@ const OUTPUT_WIDTH = 1080;
 const OUTPUT_HEIGHT = 1920;
 const DEFAULT_DURATION_SECONDS = 15;
 const AUTO_RUN_INTERVAL_MS = 15 * 60 * 1000;
+const DEFAULT_DAILY_UPLOAD_TIMES = "5am, 7am, 9am, 11am";
 
 const initialEntries = Array.from({ length: RANK_COUNT }, (_, index) => ({
   rank: index + 1,
@@ -103,10 +104,119 @@ function candidateIdsFromCandidates(candidates: ViralCandidate[]) {
 
 function formatCountdown(milliseconds: number) {
   const totalSeconds = Math.max(0, Math.ceil(milliseconds / 1000));
-  const minutes = Math.floor(totalSeconds / 60);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
   const seconds = totalSeconds % 60;
 
+  if (hours > 0) {
+    return `${hours}h ${minutes.toString().padStart(2, "0")}m`;
+  }
+
   return `${minutes}m ${seconds.toString().padStart(2, "0")}s`;
+}
+
+function normalizeDailyTimeToken(token: string) {
+  const compact = token.trim().toLowerCase().replace(/\s+/g, "");
+
+  if (!compact) {
+    return null;
+  }
+
+  const meridiemMatch = compact.match(/^(\d{1,2})(?::(\d{2}))?(am|pm)$/);
+
+  if (meridiemMatch) {
+    let hour = Number(meridiemMatch[1]);
+    const minute = Number(meridiemMatch[2] ?? "0");
+    const meridiem = meridiemMatch[3];
+
+    if (hour < 1 || hour > 12 || minute < 0 || minute > 59) {
+      return null;
+    }
+
+    if (meridiem === "am") {
+      hour = hour === 12 ? 0 : hour;
+    } else {
+      hour = hour === 12 ? 12 : hour + 12;
+    }
+
+    return `${hour.toString().padStart(2, "0")}:${minute.toString().padStart(2, "0")}`;
+  }
+
+  const clockMatch = compact.match(/^(\d{1,2})(?::(\d{2}))?$/);
+
+  if (!clockMatch) {
+    return null;
+  }
+
+  const hour = Number(clockMatch[1]);
+  const minute = Number(clockMatch[2] ?? "0");
+
+  if (hour < 0 || hour > 23 || minute < 0 || minute > 59) {
+    return null;
+  }
+
+  return `${hour.toString().padStart(2, "0")}:${minute.toString().padStart(2, "0")}`;
+}
+
+function parseDailyScheduleInput(value: string) {
+  const tokens = value.split(/[\s,;]+/).filter(Boolean);
+  const invalidTokens: string[] = [];
+  const times = tokens
+    .map((token) => {
+      const normalized = normalizeDailyTimeToken(token);
+
+      if (!normalized) {
+        invalidTokens.push(token);
+      }
+
+      return normalized;
+    })
+    .filter((time): time is string => Boolean(time));
+
+  const uniqueTimes = [...new Set(times)].sort();
+
+  if (!tokens.length) {
+    return { times: uniqueTimes, error: "Add at least one upload time." };
+  }
+
+  if (invalidTokens.length) {
+    return { times: uniqueTimes, error: `Invalid upload time: ${invalidTokens[0]}.` };
+  }
+
+  return { times: uniqueTimes, error: "" };
+}
+
+function timeToMinutes(time: string) {
+  const [hour, minute] = time.split(":").map(Number);
+  return hour * 60 + minute;
+}
+
+function nextDailyRunTimestamp(times: string[], now = new Date()) {
+  const sortedTimes = [...times].sort((a, b) => timeToMinutes(a) - timeToMinutes(b));
+  const nowTimestamp = now.getTime();
+
+  for (const time of sortedTimes) {
+    const [hour, minute] = time.split(":").map(Number);
+    const candidate = new Date(now);
+    candidate.setHours(hour, minute, 0, 0);
+
+    if (candidate.getTime() > nowTimestamp + 1000) {
+      return candidate.getTime();
+    }
+  }
+
+  const [hour, minute] = sortedTimes[0].split(":").map(Number);
+  const tomorrow = new Date(now);
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  tomorrow.setHours(hour, minute, 0, 0);
+  return tomorrow.getTime();
+}
+
+function formatLocalTime(timestamp: number) {
+  return new Intl.DateTimeFormat(undefined, {
+    hour: "numeric",
+    minute: "2-digit"
+  }).format(new Date(timestamp));
 }
 
 function isValidTikTokUrl(value: string) {
@@ -567,9 +677,15 @@ export default function Home() {
   const [nextAutoRunAt, setNextAutoRunAt] = useState<number | null>(null);
   const [autoRunCountdown, setAutoRunCountdown] = useState("off");
   const [autoRunCount, setAutoRunCount] = useState(0);
+  const [dailyScheduleEnabled, setDailyScheduleEnabled] = useState(false);
+  const [dailyScheduleInput, setDailyScheduleInput] = useState(DEFAULT_DAILY_UPLOAD_TIMES);
+  const [nextDailyRunAt, setNextDailyRunAt] = useState<number | null>(null);
+  const [dailyScheduleCountdown, setDailyScheduleCountdown] = useState("off");
+  const [dailyScheduleRunCount, setDailyScheduleRunCount] = useState(0);
 
   const ffmpegRef = useRef<FFmpeg | null>(null);
   const autoRunEnabledRef = useRef(false);
+  const dailyScheduleEnabledRef = useRef(false);
   const autoRunBusyRef = useRef(false);
 
   const orderedEntries = useMemo(
@@ -595,6 +711,10 @@ export default function Home() {
   );
   const uploadDescription = copyPasteDescription || fallbackUploadDescription(title, entries);
   const uploadTags = useMemo(() => uploadTagsFromDescription(uploadDescription), [uploadDescription]);
+  const parsedDailySchedule = useMemo(
+    () => parseDailyScheduleInput(dailyScheduleInput),
+    [dailyScheduleInput]
+  );
 
   useEffect(() => {
     let isMounted = true;
@@ -657,11 +777,68 @@ export default function Home() {
       }
 
       setNextAutoRunAt(null);
-      void runScheduledCycle();
+      void runScheduledCycle("interval");
     }, 1000);
 
     return () => window.clearInterval(timer);
   }, [autoRunEvery15, nextAutoRunAt, isFindingIdea, isGenerating, isUploadingYoutube]);
+
+  useEffect(() => {
+    dailyScheduleEnabledRef.current = dailyScheduleEnabled;
+
+    if (!dailyScheduleEnabled) {
+      setNextDailyRunAt(null);
+      setDailyScheduleCountdown("off");
+      return;
+    }
+
+    if (parsedDailySchedule.error || !parsedDailySchedule.times.length) {
+      setNextDailyRunAt(null);
+      setDailyScheduleCountdown("fix times");
+      setErrors((current) => ({
+        ...current,
+        dailySchedule: parsedDailySchedule.error || "Add at least one upload time."
+      }));
+      return;
+    }
+
+    const nextRun = nextDailyRunTimestamp(parsedDailySchedule.times);
+    setAutoUploadToYoutube(true);
+    setYoutubeUploadUrl(null);
+    setNextDailyRunAt(nextRun);
+    setDailyScheduleCountdown(formatCountdown(nextRun - Date.now()));
+    setStatusText(`Daily schedule set for ${formatLocalTime(nextRun)}`);
+    setErrors((current) => {
+      const { dailySchedule, ...rest } = current;
+      return rest;
+    });
+  }, [dailyScheduleEnabled, parsedDailySchedule.error, parsedDailySchedule.times]);
+
+  useEffect(() => {
+    if (!dailyScheduleEnabled || !nextDailyRunAt) {
+      return;
+    }
+
+    const timer = window.setInterval(() => {
+      const remaining = nextDailyRunAt - Date.now();
+      setDailyScheduleCountdown(formatCountdown(remaining));
+
+      if (remaining > 0) {
+        return;
+      }
+
+      if (isGenerating || isFindingIdea || isUploadingYoutube || autoRunBusyRef.current) {
+        setDailyScheduleCountdown("waiting");
+        setNextDailyRunAt(Date.now() + 60 * 1000);
+        return;
+      }
+
+      setNextDailyRunAt(null);
+      void runScheduledCycle("daily");
+    }, 1000);
+
+    return () => window.clearInterval(timer);
+  }, [dailyScheduleEnabled, nextDailyRunAt, isFindingIdea, isGenerating, isUploadingYoutube]);
 
   function updateEntry(rank: number, patch: Partial<RankingEntry>) {
     setEntries((current) =>
@@ -736,17 +913,23 @@ export default function Home() {
     }
   }
 
-  async function runScheduledCycle() {
-    if (!autoRunEnabledRef.current || autoRunBusyRef.current) {
+  async function runScheduledCycle(source: "interval" | "daily") {
+    const isDailySchedule = source === "daily";
+    const isEnabled = isDailySchedule
+      ? dailyScheduleEnabledRef.current
+      : autoRunEnabledRef.current;
+    const sourceLabel = isDailySchedule ? "Daily schedule" : "Auto-run";
+
+    if (!isEnabled || autoRunBusyRef.current) {
       return;
     }
 
     autoRunBusyRef.current = true;
     setAutoUploadToYoutube(true);
     setYoutubeUploadUrl(null);
-    setStatusText("Auto-run: finding idea...");
+    setStatusText(`${sourceLabel}: finding idea...`);
     setErrors((current) => {
-      const { autoRun, generation, idea, youtube, ...rest } = current;
+      const { autoRun, dailySchedule, generation, idea, youtube, ...rest } = current;
       return rest;
     });
 
@@ -755,7 +938,7 @@ export default function Home() {
       const selectedCandidates = nextIdea.candidates.slice(0, RANK_COUNT);
 
       if (selectedCandidates.length !== RANK_COUNT) {
-        throw new Error("Auto-run could not find 5 TikTok candidates.");
+        throw new Error(`${sourceLabel} could not find 5 TikTok candidates.`);
       }
 
       const nextEntries = entriesFromCandidates(selectedCandidates);
@@ -765,7 +948,7 @@ export default function Home() {
       // Scheduled runs pass the freshly found idea directly into generation so
       // React state timing cannot cause the previous title or clips to be reused.
       loadViralIdea(nextIdea);
-      setStatusText("Auto-run: generating video...");
+      setStatusText(`${sourceLabel}: generating video...`);
 
       const generated = await generateVideo({
         formTitle: nextIdea.title,
@@ -776,20 +959,37 @@ export default function Home() {
       });
 
       if (!generated) {
-        throw new Error("Auto-run generation or YouTube upload failed.");
+        throw new Error(`${sourceLabel} generation or YouTube upload failed.`);
       }
 
-      setAutoRunCount((current) => current + 1);
+      if (isDailySchedule) {
+        setDailyScheduleRunCount((current) => current + 1);
+      } else {
+        setAutoRunCount((current) => current + 1);
+      }
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Auto-run failed.";
-      setErrors((current) => ({ ...current, autoRun: message }));
-      setStatusText("Auto-run failed");
+      const message = error instanceof Error ? error.message : `${sourceLabel} failed.`;
+      setErrors((current) => ({
+        ...current,
+        [isDailySchedule ? "dailySchedule" : "autoRun"]: message
+      }));
+      setStatusText(`${sourceLabel} failed`);
     } finally {
       autoRunBusyRef.current = false;
 
-      if (autoRunEnabledRef.current) {
+      if (!isDailySchedule && autoRunEnabledRef.current) {
         setNextAutoRunAt(Date.now() + AUTO_RUN_INTERVAL_MS);
         setAutoRunCountdown(formatCountdown(AUTO_RUN_INTERVAL_MS));
+      }
+
+      if (isDailySchedule && dailyScheduleEnabledRef.current) {
+        const nextSchedule = parseDailyScheduleInput(dailyScheduleInput);
+
+        if (!nextSchedule.error && nextSchedule.times.length) {
+          const nextRun = nextDailyRunTimestamp(nextSchedule.times);
+          setNextDailyRunAt(nextRun);
+          setDailyScheduleCountdown(formatCountdown(nextRun - Date.now()));
+        }
       }
     }
   }
@@ -1120,6 +1320,26 @@ export default function Home() {
               <h1>YouTube Shorts ranking video generator</h1>
             </div>
             <div className="header-tools">
+              <label className="upload-toggle" data-active={dailyScheduleEnabled}>
+                <input
+                  type="checkbox"
+                  checked={dailyScheduleEnabled}
+                  onChange={(event) => setDailyScheduleEnabled(event.target.checked)}
+                />
+                <span className="toggle-track" aria-hidden="true">
+                  <span />
+                </span>
+                <span className="toggle-label">
+                  <strong><Clock size={15} /> Daily schedule</strong>
+                  <small>
+                    {dailyScheduleEnabled
+                      ? nextDailyRunAt
+                        ? `${formatLocalTime(nextDailyRunAt)} next - ${dailyScheduleRunCount} done`
+                        : `${dailyScheduleCountdown} - ${dailyScheduleRunCount} done`
+                      : "daily slots"}
+                  </small>
+                </span>
+              </label>
               <label className="upload-toggle" data-active={autoRunEvery15}>
                 <input
                   type="checkbox"
@@ -1176,6 +1396,32 @@ export default function Home() {
                 {isFindingIdea ? <Loader2 size={18} className="spin" /> : <Lightbulb size={18} />}
                 Find Viral Idea
               </button>
+            </div>
+
+            <div className="schedule-row">
+              <label className="field schedule-field">
+                <span>Daily upload times</span>
+                <input
+                  value={dailyScheduleInput}
+                  onChange={(event) => setDailyScheduleInput(event.target.value)}
+                  placeholder="5am, 7am, 9am, 11am"
+                />
+                {errors.dailySchedule ? (
+                  <small className="error-text">{errors.dailySchedule}</small>
+                ) : null}
+              </label>
+
+              <div className="schedule-status" data-active={dailyScheduleEnabled}>
+                <Clock size={18} />
+                <div>
+                  <strong>{dailyScheduleEnabled ? "Next upload" : "Schedule off"}</strong>
+                  <span>
+                    {dailyScheduleEnabled && nextDailyRunAt
+                      ? `${formatLocalTime(nextDailyRunAt)} local - ${dailyScheduleCountdown}`
+                      : parsedDailySchedule.times.join(", ") || "No times set"}
+                  </span>
+                </div>
+              </div>
             </div>
 
             {viralIdea ? (
@@ -1325,7 +1571,8 @@ export default function Home() {
             <div className="error-panel" role="alert">
               <AlertCircle size={18} />
               <span>
-                {errors.autoRun ??
+                {errors.dailySchedule ??
+                  errors.autoRun ??
                   errors.generation ??
                   errors.youtube ??
                   errors.idea ??
