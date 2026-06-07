@@ -104,7 +104,7 @@ Important: this schedule is browser-based in the current version. Keep the app o
 
 The app can save your selected daily upload times into GitHub Actions repository variables. The workflow in `.github/workflows/scheduled-upload.yml` runs every 15 minutes, checks those saved times, and only generates/uploads when the current time matches a scheduled slot.
 
-This means the upload schedule can keep running even when the website tab is closed.
+This means the upload schedule can keep running even when the website tab is closed!
 
 ### Setup Checklist
 
