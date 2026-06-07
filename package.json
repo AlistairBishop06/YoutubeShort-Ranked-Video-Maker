@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
+    "github:upload": "node scripts/github-scheduled-upload.mjs",
     "start": "next start",
     "postinstall": "node scripts/copy-ffmpeg-core.mjs"
   },

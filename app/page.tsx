@@ -9,6 +9,7 @@ import {
   Copy,
   Download,
   ExternalLink,
+  Github,
   Lightbulb,
   Loader2,
   Play,
@@ -65,6 +66,17 @@ type YouTubeStatus = {
   configured: boolean;
   missing: string[];
   privacyStatus: string;
+};
+
+type GitHubScheduleStatus = {
+  configured: boolean;
+  missing: string[];
+  schedule?: {
+    enabled: boolean;
+    times: string[];
+    timezone: string;
+    lastSlot?: string;
+  };
 };
 
 type GenerateVideoOptions = {
@@ -682,6 +694,11 @@ export default function Home() {
   const [nextDailyRunAt, setNextDailyRunAt] = useState<number | null>(null);
   const [dailyScheduleCountdown, setDailyScheduleCountdown] = useState("off");
   const [dailyScheduleRunCount, setDailyScheduleRunCount] = useState(0);
+  const [githubScheduleEnabled, setGithubScheduleEnabled] = useState(false);
+  const [githubScheduleStatus, setGithubScheduleStatus] = useState<GitHubScheduleStatus | null>(null);
+  const [githubScheduleMessage, setGithubScheduleMessage] = useState("Not saved to GitHub yet");
+  const [githubScheduleTimezone, setGithubScheduleTimezone] = useState("UTC");
+  const [isSavingGithubSchedule, setIsSavingGithubSchedule] = useState(false);
 
   const ffmpegRef = useRef<FFmpeg | null>(null);
   const autoRunEnabledRef = useRef(false);
@@ -729,6 +746,51 @@ export default function Home() {
       .catch(() => {
         if (isMounted) {
           setYoutubeStatus({ configured: false, missing: ["YouTube route unavailable"], privacyStatus: "private" });
+        }
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    let isMounted = true;
+    const localTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+
+    setGithubScheduleTimezone(localTimezone);
+
+    fetch("/api/github/schedule")
+      .then((response) => response.json())
+      .then((payload: GitHubScheduleStatus) => {
+        if (!isMounted) {
+          return;
+        }
+
+        setGithubScheduleStatus(payload);
+
+        if (!payload.configured) {
+          setGithubScheduleMessage("Add GitHub schedule env vars to save closed-tab schedules.");
+          return;
+        }
+
+        const savedSchedule = payload.schedule;
+
+        if (savedSchedule?.times?.length) {
+          setDailyScheduleInput(savedSchedule.times.join(", "));
+        }
+
+        setGithubScheduleEnabled(Boolean(savedSchedule?.enabled));
+        setGithubScheduleTimezone(savedSchedule?.timezone || localTimezone);
+        setGithubScheduleMessage(
+          savedSchedule?.enabled
+            ? `Saved to GitHub Actions for ${savedSchedule.timezone || localTimezone}`
+            : "GitHub Actions schedule is saved but disabled"
+        );
+      })
+      .catch(() => {
+        if (isMounted) {
+          setGithubScheduleMessage("Could not read GitHub schedule settings.");
         }
       });
 
@@ -849,6 +911,55 @@ export default function Home() {
   function handleFileChange(rank: number, event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0] ?? null;
     updateEntry(rank, { file });
+  }
+
+  async function saveGithubSchedule() {
+    if (parsedDailySchedule.error) {
+      setErrors((current) => ({ ...current, dailySchedule: parsedDailySchedule.error }));
+      setGithubScheduleMessage(parsedDailySchedule.error);
+      return;
+    }
+
+    setIsSavingGithubSchedule(true);
+    setGithubScheduleMessage("Saving to GitHub Actions...");
+    setErrors((current) => {
+      const { dailySchedule, githubSchedule, ...rest } = current;
+      return rest;
+    });
+
+    try {
+      const response = await fetch("/api/github/schedule", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          enabled: githubScheduleEnabled,
+          times: dailyScheduleInput,
+          timezone: githubScheduleTimezone
+        })
+      });
+      const payload = (await response.json()) as GitHubScheduleStatus & { error?: string };
+
+      if (!response.ok) {
+        throw new Error(payload.error ?? "Could not save GitHub schedule.");
+      }
+
+      setGithubScheduleStatus({
+        configured: true,
+        missing: [],
+        schedule: payload.schedule
+      });
+      setGithubScheduleMessage(
+        payload.schedule?.enabled
+          ? `Saved. GitHub Actions will run at ${payload.schedule.times.join(", ")} ${payload.schedule.timezone}.`
+          : "Saved. GitHub Actions schedule is disabled."
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Could not save GitHub schedule.";
+      setErrors((current) => ({ ...current, githubSchedule: message }));
+      setGithubScheduleMessage(message);
+    } finally {
+      setIsSavingGithubSchedule(false);
+    }
   }
 
   function applyCandidates(candidates: ViralCandidate[], nextTitle = title) {
@@ -1424,6 +1535,34 @@ export default function Home() {
               </div>
             </div>
 
+            <div className="github-schedule-panel" data-active={githubScheduleEnabled}>
+              <div className="github-schedule-copy">
+                <Github size={19} />
+                <div>
+                  <strong>GitHub Actions schedule</strong>
+                  <span>{githubScheduleMessage}</span>
+                </div>
+              </div>
+
+              <label className="inline-check">
+                <input
+                  type="checkbox"
+                  checked={githubScheduleEnabled}
+                  onChange={(event) => setGithubScheduleEnabled(event.target.checked)}
+                />
+                <span>Run when app is closed</span>
+              </label>
+
+              <button
+                className="secondary-button compact-button"
+                onClick={saveGithubSchedule}
+                disabled={isSavingGithubSchedule || Boolean(parsedDailySchedule.error)}
+              >
+                {isSavingGithubSchedule ? <Loader2 size={17} className="spin" /> : <Github size={17} />}
+                Save GitHub Schedule
+              </button>
+            </div>
+
             {viralIdea ? (
               <div className="idea-result">
                 <div className="idea-summary">
@@ -1572,6 +1711,7 @@ export default function Home() {
               <AlertCircle size={18} />
               <span>
                 {errors.dailySchedule ??
+                  errors.githubSchedule ??
                   errors.autoRun ??
                   errors.generation ??
                   errors.youtube ??

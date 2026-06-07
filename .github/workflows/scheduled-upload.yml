@@ -1,0 +1,60 @@
+name: Scheduled YouTube Shorts Upload
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Upload immediately, ignoring the saved schedule"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  actions: write
+  contents: read
+
+concurrency:
+  group: scheduled-youtube-shorts-upload
+  cancel-in-progress: false
+
+jobs:
+  upload:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      APP_BASE_URL: ${{ secrets.APP_BASE_URL || vars.APP_BASE_URL }}
+      CLIP_DURATION_SECONDS: ${{ vars.CLIP_DURATION_SECONDS || '15' }}
+      FORCE_UPLOAD: ${{ github.event_name == 'workflow_dispatch' && inputs.force && 'true' || 'false' }}
+      LAST_UPLOAD_SLOT: ${{ vars.LAST_UPLOAD_SLOT }}
+      UPLOAD_SCHEDULE_ENABLED: ${{ vars.UPLOAD_SCHEDULE_ENABLED || 'false' }}
+      UPLOAD_SCHEDULE_TIMES: ${{ vars.UPLOAD_SCHEDULE_TIMES || '05:00,07:00,09:00,11:00' }}
+      UPLOAD_SCHEDULE_TIMEZONE: ${{ vars.UPLOAD_SCHEDULE_TIMEZONE || 'UTC' }}
+      UPLOAD_SCHEDULE_WINDOW_MINUTES: ${{ vars.UPLOAD_SCHEDULE_WINDOW_MINUTES || '15' }}
+      YOUTUBE_CATEGORY_ID: ${{ vars.YOUTUBE_CATEGORY_ID || '24' }}
+      YOUTUBE_CLIENT_ID: ${{ secrets.YOUTUBE_CLIENT_ID }}
+      YOUTUBE_CLIENT_SECRET: ${{ secrets.YOUTUBE_CLIENT_SECRET }}
+      YOUTUBE_PRIVACY_STATUS: ${{ vars.YOUTUBE_PRIVACY_STATUS || 'private' }}
+      YOUTUBE_REFRESH_TOKEN: ${{ secrets.YOUTUBE_REFRESH_TOKEN }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install native FFmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+
+      - name: Run scheduled upload worker
+        run: node scripts/github-scheduled-upload.mjs

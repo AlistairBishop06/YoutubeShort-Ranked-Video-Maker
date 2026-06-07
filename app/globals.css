@@ -267,6 +267,71 @@ h2 {
   font-weight: 800;
 }
 
+.github-schedule-panel {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 12px;
+  align-items: center;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: rgba(0, 0, 0, 0.18);
+  padding: 12px;
+}
+
+.github-schedule-panel[data-active="true"] {
+  border-color: rgba(57, 255, 136, 0.48);
+  background: rgba(57, 255, 136, 0.08);
+}
+
+.github-schedule-copy {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 10px;
+  color: var(--accent);
+}
+
+.github-schedule-copy div {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+}
+
+.github-schedule-copy strong,
+.github-schedule-copy span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.github-schedule-copy strong {
+  color: var(--text);
+  font-size: 0.88rem;
+}
+
+.github-schedule-copy span {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
+.inline-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text);
+  cursor: pointer;
+  font-size: 0.84rem;
+  font-weight: 900;
+  white-space: nowrap;
+}
+
+.inline-check input {
+  width: 17px;
+  height: 17px;
+  accent-color: var(--accent);
+}
+
 .compact-button {
   min-height: 38px;
   flex: 0 0 auto;
@@ -792,6 +857,7 @@ h2 {
   .idea-summary,
   .description-head,
   .schedule-row,
+  .github-schedule-panel,
   .form-grid,
   .entry-card,
   .entry-fields {
@@ -829,5 +895,9 @@ h2 {
 
   .candidate-grid {
     grid-template-columns: 1fr;
+  }
+
+  .github-schedule-panel .compact-button {
+    justify-content: center;
   }
 }
