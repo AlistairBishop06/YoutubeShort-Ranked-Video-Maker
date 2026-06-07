@@ -137,6 +137,29 @@ async function readVariable(name: string) {
   return payload.value ?? "";
 }
 
+async function variableExists(name: string) {
+  const response = await githubRequest(`/${name}`);
+
+  if (response.status === 404) {
+    return false;
+  }
+
+  if (!response.ok) {
+    throw await githubResponseError("read", name, response);
+  }
+
+  return true;
+}
+
+async function githubResponseError(action: string, name: string, response: Response) {
+  const details = await response.text();
+  const suffix = details ? ` ${details}` : "";
+
+  return new Error(
+    `Could not ${action} GitHub variable ${name}. GitHub returned ${response.status}.${suffix}`
+  );
+}
+
 async function readOptionalVariable(name: string) {
   try {
     return await readVariable(name);
@@ -146,26 +169,41 @@ async function readOptionalVariable(name: string) {
 }
 
 async function upsertVariable(name: string, value: string) {
-  const patchResponse = await githubRequest(`/${name}`, {
-    method: "PATCH",
-    body: JSON.stringify({ name, value })
-  });
+  const exists = await variableExists(name);
 
-  if (patchResponse.status !== 404) {
-    if (!patchResponse.ok) {
-      throw new Error(`Could not update GitHub variable ${name}.`);
+  if (!exists) {
+    const createResponse = await githubRequest("", {
+      method: "POST",
+      body: JSON.stringify({ name, value })
+    });
+
+    if (createResponse.status === 409) {
+      const retryResponse = await githubRequest(`/${name}`, {
+        method: "PATCH",
+        body: JSON.stringify({ name, value })
+      });
+
+      if (!retryResponse.ok) {
+        throw await githubResponseError("update", name, retryResponse);
+      }
+
+      return;
+    }
+
+    if (!createResponse.ok) {
+      throw await githubResponseError("create", name, createResponse);
     }
 
     return;
   }
 
-  const createResponse = await githubRequest("", {
-    method: "POST",
+  const patchResponse = await githubRequest(`/${name}`, {
+    method: "PATCH",
     body: JSON.stringify({ name, value })
   });
 
-  if (!createResponse.ok) {
-    throw new Error(`Could not create GitHub variable ${name}.`);
+  if (!patchResponse.ok) {
+    throw await githubResponseError("update", name, patchResponse);
   }
 }
 
@@ -228,11 +266,9 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Choose a valid timezone." }, { status: 400 });
     }
 
-    await Promise.all([
-      upsertVariable(VARIABLE_NAMES.enabled, body.enabled ? "true" : "false"),
-      upsertVariable(VARIABLE_NAMES.times, parsed.times.join(",")),
-      upsertVariable(VARIABLE_NAMES.timezone, timezone)
-    ]);
+    await upsertVariable(VARIABLE_NAMES.enabled, body.enabled ? "true" : "false");
+    await upsertVariable(VARIABLE_NAMES.times, parsed.times.join(","));
+    await upsertVariable(VARIABLE_NAMES.timezone, timezone);
 
     return NextResponse.json({
       configured: true,
