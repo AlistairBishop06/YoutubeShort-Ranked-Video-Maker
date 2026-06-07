@@ -5,6 +5,7 @@ import { fetchFile } from "@ffmpeg/util";
 import {
   AlertCircle,
   Check,
+  Clock,
   Copy,
   Download,
   ExternalLink,
@@ -66,10 +67,19 @@ type YouTubeStatus = {
   privacyStatus: string;
 };
 
+type GenerateVideoOptions = {
+  formTitle?: string;
+  formEntries?: RankingEntry[];
+  forceUpload?: boolean;
+  description?: string;
+  tags?: string[];
+};
+
 const RANK_COUNT = 5;
 const OUTPUT_WIDTH = 1080;
 const OUTPUT_HEIGHT = 1920;
 const DEFAULT_DURATION_SECONDS = 15;
+const AUTO_RUN_INTERVAL_MS = 15 * 60 * 1000;
 
 const initialEntries = Array.from({ length: RANK_COUNT }, (_, index) => ({
   rank: index + 1,
@@ -77,6 +87,27 @@ const initialEntries = Array.from({ length: RANK_COUNT }, (_, index) => ({
   url: "",
   file: null
 }));
+
+function entriesFromCandidates(candidates: ViralCandidate[]) {
+  return candidates.slice(0, RANK_COUNT).map((candidate, index) => ({
+    rank: index + 1,
+    name: candidate.name || `@${candidate.creator}`,
+    url: candidate.url,
+    file: null
+  }));
+}
+
+function candidateIdsFromCandidates(candidates: ViralCandidate[]) {
+  return candidates.slice(0, RANK_COUNT).map((candidate) => candidate.id);
+}
+
+function formatCountdown(milliseconds: number) {
+  const totalSeconds = Math.max(0, Math.ceil(milliseconds / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+
+  return `${minutes}m ${seconds.toString().padStart(2, "0")}s`;
+}
 
 function isValidTikTokUrl(value: string) {
   if (!value.trim()) {
@@ -532,8 +563,14 @@ export default function Home() {
   const [youtubeStatus, setYoutubeStatus] = useState<YouTubeStatus | null>(null);
   const [isUploadingYoutube, setIsUploadingYoutube] = useState(false);
   const [youtubeUploadUrl, setYoutubeUploadUrl] = useState<string | null>(null);
+  const [autoRunEvery15, setAutoRunEvery15] = useState(false);
+  const [nextAutoRunAt, setNextAutoRunAt] = useState<number | null>(null);
+  const [autoRunCountdown, setAutoRunCountdown] = useState("off");
+  const [autoRunCount, setAutoRunCount] = useState(0);
 
   const ffmpegRef = useRef<FFmpeg | null>(null);
+  const autoRunEnabledRef = useRef(false);
+  const autoRunBusyRef = useRef(false);
 
   const orderedEntries = useMemo(
     // Clips are intentionally processed in countdown order for ranking videos.
@@ -580,6 +617,52 @@ export default function Home() {
     };
   }, []);
 
+  useEffect(() => {
+    autoRunEnabledRef.current = autoRunEvery15;
+
+    if (autoRunEvery15) {
+      setAutoUploadToYoutube(true);
+      setYoutubeUploadUrl(null);
+      setNextAutoRunAt(Date.now() + AUTO_RUN_INTERVAL_MS);
+      setAutoRunCountdown(formatCountdown(AUTO_RUN_INTERVAL_MS));
+      setStatusText("Auto-run scheduled");
+      setErrors((current) => {
+        const { autoRun, ...rest } = current;
+        return rest;
+      });
+      return;
+    }
+
+    setNextAutoRunAt(null);
+    setAutoRunCountdown("off");
+  }, [autoRunEvery15]);
+
+  useEffect(() => {
+    if (!autoRunEvery15 || !nextAutoRunAt) {
+      return;
+    }
+
+    const timer = window.setInterval(() => {
+      const remaining = nextAutoRunAt - Date.now();
+      setAutoRunCountdown(formatCountdown(remaining));
+
+      if (remaining > 0) {
+        return;
+      }
+
+      if (isGenerating || isFindingIdea || isUploadingYoutube || autoRunBusyRef.current) {
+        setAutoRunCountdown("waiting");
+        setNextAutoRunAt(Date.now() + 60 * 1000);
+        return;
+      }
+
+      setNextAutoRunAt(null);
+      void runScheduledCycle();
+    }, 1000);
+
+    return () => window.clearInterval(timer);
+  }, [autoRunEvery15, nextAutoRunAt, isFindingIdea, isGenerating, isUploadingYoutube]);
+
   function updateEntry(rank: number, patch: Partial<RankingEntry>) {
     setEntries((current) =>
       current.map((entry) => (entry.rank === rank ? { ...entry, ...patch } : entry))
@@ -603,19 +686,31 @@ export default function Home() {
     }
 
     setTitle(nextTitle);
-    setEntries(
-      selected.map((candidate, index) => ({
-        rank: index + 1,
-        name: candidate.name || `@${candidate.creator}`,
-        url: candidate.url,
-        file: null
-      }))
-    );
+    setEntries(entriesFromCandidates(selected));
     setErrors((current) => {
       const { idea, ...rest } = current;
       return rest;
     });
     setStatusText("Idea loaded");
+  }
+
+  async function fetchViralIdea() {
+    const response = await fetch("/api/ideas/find", { method: "POST" });
+    const payload = (await response.json()) as Partial<ViralIdea> & { error?: string };
+
+    if (!response.ok || !payload.title || !Array.isArray(payload.candidates)) {
+      throw new Error(payload.error ?? "Could not find a viral idea.");
+    }
+
+    return payload as ViralIdea;
+  }
+
+  function loadViralIdea(nextIdea: ViralIdea) {
+    const nextSelectedIds = candidateIdsFromCandidates(nextIdea.candidates);
+    setViralIdea(nextIdea);
+    setSelectedCandidateIds(nextSelectedIds);
+    setCopiedDescription(false);
+    applyCandidates(nextIdea.candidates.slice(0, RANK_COUNT), nextIdea.title);
   }
 
   async function findViralIdea() {
@@ -631,26 +726,71 @@ export default function Home() {
     });
 
     try {
-      const response = await fetch("/api/ideas/find", { method: "POST" });
-      const payload = (await response.json()) as Partial<ViralIdea> & { error?: string };
-
-      if (!response.ok || !payload.title || !Array.isArray(payload.candidates)) {
-        throw new Error(payload.error ?? "Could not find a viral idea.");
-      }
-
-      const nextIdea = payload as ViralIdea;
-      const nextSelectedIds = nextIdea.candidates.slice(0, RANK_COUNT).map((candidate) => candidate.id);
-
-      setViralIdea(nextIdea);
-      setSelectedCandidateIds(nextSelectedIds);
-      setCopiedDescription(false);
-      applyCandidates(nextIdea.candidates.slice(0, RANK_COUNT), nextIdea.title);
+      loadViralIdea(await fetchViralIdea());
     } catch (error) {
       const message = error instanceof Error ? error.message : "Could not find a viral idea.";
       setErrors((current) => ({ ...current, idea: message }));
       setStatusText("Idea search failed");
     } finally {
       setIsFindingIdea(false);
+    }
+  }
+
+  async function runScheduledCycle() {
+    if (!autoRunEnabledRef.current || autoRunBusyRef.current) {
+      return;
+    }
+
+    autoRunBusyRef.current = true;
+    setAutoUploadToYoutube(true);
+    setYoutubeUploadUrl(null);
+    setStatusText("Auto-run: finding idea...");
+    setErrors((current) => {
+      const { autoRun, generation, idea, youtube, ...rest } = current;
+      return rest;
+    });
+
+    try {
+      const nextIdea = await fetchViralIdea();
+      const selectedCandidates = nextIdea.candidates.slice(0, RANK_COUNT);
+
+      if (selectedCandidates.length !== RANK_COUNT) {
+        throw new Error("Auto-run could not find 5 TikTok candidates.");
+      }
+
+      const nextEntries = entriesFromCandidates(selectedCandidates);
+      const nextDescription = buildCopyDescription(nextIdea, selectedCandidates);
+      const nextTags = uploadTagsFromDescription(nextDescription);
+
+      // Scheduled runs pass the freshly found idea directly into generation so
+      // React state timing cannot cause the previous title or clips to be reused.
+      loadViralIdea(nextIdea);
+      setStatusText("Auto-run: generating video...");
+
+      const generated = await generateVideo({
+        formTitle: nextIdea.title,
+        formEntries: nextEntries,
+        forceUpload: true,
+        description: nextDescription,
+        tags: nextTags
+      });
+
+      if (!generated) {
+        throw new Error("Auto-run generation or YouTube upload failed.");
+      }
+
+      setAutoRunCount((current) => current + 1);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Auto-run failed.";
+      setErrors((current) => ({ ...current, autoRun: message }));
+      setStatusText("Auto-run failed");
+    } finally {
+      autoRunBusyRef.current = false;
+
+      if (autoRunEnabledRef.current) {
+        setNextAutoRunAt(Date.now() + AUTO_RUN_INTERVAL_MS);
+        setAutoRunCountdown(formatCountdown(AUTO_RUN_INTERVAL_MS));
+      }
     }
   }
 
@@ -703,14 +843,19 @@ export default function Home() {
     window.setTimeout(() => setCopiedDescription(false), 1800);
   }
 
-  async function uploadGeneratedVideo(blob: Blob) {
+  async function uploadGeneratedVideo(
+    blob: Blob,
+    uploadTitle = title,
+    description = uploadDescription,
+    tags = uploadTags
+  ) {
     const formData = new FormData();
-    const fileName = downloadFileName(title);
+    const fileName = downloadFileName(uploadTitle);
 
     formData.set("video", new File([blob], fileName, { type: "video/mp4" }));
-    formData.set("title", viralVideoTitle(title));
-    formData.set("description", uploadDescription);
-    formData.set("tags", uploadTags.join(","));
+    formData.set("title", viralVideoTitle(uploadTitle));
+    formData.set("description", description);
+    formData.set("tags", tags.join(","));
 
     const response = await fetch("/api/youtube/upload", {
       method: "POST",
@@ -725,12 +870,12 @@ export default function Home() {
     return payload.url;
   }
 
-  function validateForm() {
+  function validateForm(formTitle = title, formEntries = entries) {
     const nextErrors: FieldErrors = {};
 
     // Validation enforces the fixed five-entry ranking surface and rejects
     // malformed TikTok URLs while still allowing manual uploads as a fallback.
-    if (!title.trim()) {
+    if (!formTitle.trim()) {
       nextErrors.title = "Enter a main title.";
     }
 
@@ -738,11 +883,11 @@ export default function Home() {
       nextErrors.duration = "Choose 2 to 20 seconds per clip.";
     }
 
-    if (entries.length !== RANK_COUNT) {
+    if (formEntries.length !== RANK_COUNT) {
       nextErrors.entries = "Exactly 5 ranked entries are required.";
     }
 
-    entries.forEach((entry) => {
+    formEntries.forEach((entry) => {
       if (!entry.name.trim()) {
         nextErrors[`name-${entry.rank}`] = `Enter a name for #${entry.rank}.`;
       }
@@ -789,16 +934,21 @@ export default function Home() {
     return ffmpeg;
   }
 
-  async function generateVideo() {
+  async function generateVideo(options: GenerateVideoOptions = {}) {
     if (isGenerating) {
-      return;
+      return false;
     }
 
-    const nextErrors = validateForm();
+    const activeTitle = options.formTitle ?? title;
+    const activeEntries = options.formEntries ?? entries;
+    const activeDescription = options.description ?? uploadDescription;
+    const activeTags = options.tags ?? uploadTags;
+    const shouldUpload = options.forceUpload ?? autoUploadToYoutube;
+    const nextErrors = validateForm(activeTitle, activeEntries);
 
     if (Object.keys(nextErrors).length > 0) {
       setStatusText("Fix the highlighted fields.");
-      return;
+      return false;
     }
 
     if (previewUrl) {
@@ -818,7 +968,7 @@ export default function Home() {
       // Entries are converted to real File objects before FFmpeg starts. Uploaded
       // clips are already available in the browser; TikTok URLs are pulled by the
       // server into a temporary folder, fetched as blobs, then deleted after export.
-      for (const [index, entry] of entries.entries()) {
+      for (const [index, entry] of activeEntries.entries()) {
         if (entry.file) {
           resolvedEntries.push(entry);
           continue;
@@ -854,7 +1004,7 @@ export default function Home() {
         await ffmpeg.writeFile(inputName, await fetchFile(entry.file));
         await ffmpeg.writeFile(
           overlayName,
-          await createOverlayPng(title, entry, orderedResolvedEntries)
+          await createOverlayPng(activeTitle, entry, orderedResolvedEntries)
         );
 
         setStatusText(`Rendering #${entry.rank}...`);
@@ -904,27 +1054,36 @@ export default function Home() {
       setPreviewUrl(url);
       setProgress(100);
 
-      if (autoUploadToYoutube) {
+      if (shouldUpload) {
         try {
           setIsUploadingYoutube(true);
           setStatusText("Uploading to YouTube...");
-          const uploadUrl = await uploadGeneratedVideo(blob);
+          const uploadUrl = await uploadGeneratedVideo(
+            blob,
+            activeTitle,
+            activeDescription,
+            activeTags
+          );
           setYoutubeUploadUrl(uploadUrl);
           setStatusText("Uploaded to YouTube");
+          return true;
         } catch (error) {
           const message = error instanceof Error ? error.message : "YouTube upload failed.";
           setErrors((current) => ({ ...current, youtube: message }));
           setStatusText("Preview ready; upload failed");
+          return false;
         } finally {
           setIsUploadingYoutube(false);
         }
       } else {
         setStatusText("Preview ready");
+        return true;
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : "Video generation failed.";
       setErrors((current) => ({ ...current, generation: message }));
       setStatusText("Generation failed");
+      return false;
     } finally {
       if (cleanupSessionId) {
         await cleanupDownloadedClips(cleanupSessionId);
@@ -961,6 +1120,24 @@ export default function Home() {
               <h1>YouTube Shorts ranking video generator</h1>
             </div>
             <div className="header-tools">
+              <label className="upload-toggle" data-active={autoRunEvery15}>
+                <input
+                  type="checkbox"
+                  checked={autoRunEvery15}
+                  onChange={(event) => setAutoRunEvery15(event.target.checked)}
+                />
+                <span className="toggle-track" aria-hidden="true">
+                  <span />
+                </span>
+                <span className="toggle-label">
+                  <strong><Clock size={15} /> Auto-run</strong>
+                  <small>
+                    {autoRunEvery15
+                      ? `${autoRunCountdown} next - ${autoRunCount} done`
+                      : "15 min cycle"}
+                  </small>
+                </span>
+              </label>
               <label className="upload-toggle" data-active={autoUploadToYoutube}>
                 <input
                   type="checkbox"
@@ -1147,7 +1324,13 @@ export default function Home() {
           {hasErrors ? (
             <div className="error-panel" role="alert">
               <AlertCircle size={18} />
-              <span>{errors.generation ?? errors.youtube ?? errors.idea ?? "Some fields need attention."}</span>
+              <span>
+                {errors.autoRun ??
+                  errors.generation ??
+                  errors.youtube ??
+                  errors.idea ??
+                  "Some fields need attention."}
+              </span>
             </div>
           ) : null}
 
@@ -1161,7 +1344,7 @@ export default function Home() {
           ) : null}
 
           <div className="actions">
-            <button className="primary-button" onClick={generateVideo} disabled={isGenerating}>
+            <button className="primary-button" onClick={() => generateVideo()} disabled={isGenerating}>
               {isGenerating ? <Loader2 size={19} className="spin" /> : <Wand2 size={19} />}
               Generate Video
             </button>

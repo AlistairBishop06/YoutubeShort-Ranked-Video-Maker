@@ -13,6 +13,7 @@ The app lets you:
 - Preserve audio from the source clips.
 - Generate a copy-paste viral description with emojis and hashtags.
 - Optionally auto-upload the finished MP4 to YouTube.
+- Auto-run every 15 minutes to find a new idea, generate a new video, and upload it.
 
 The app is designed for quick “Top 5” style videos, for example:
 
@@ -53,6 +54,20 @@ http://127.0.0.1:3000
 8. Download the finished video.
 
 TikTok clips are downloaded into `.tmp/tiktok-clips` temporarily and cleaned up after generation.
+
+## Auto-Run Every 15 Minutes
+
+The `Auto-run` toggle in the top bar starts a repeating 15-minute loop:
+
+1. Find a fresh viral idea.
+2. Insert the generated title and 5 TikTok candidates into the editor.
+3. Generate the 1080x1920 MP4.
+4. Upload the finished video to YouTube using the generated emoji title, description, and hashtags.
+5. Schedule the next run for 15 minutes later.
+
+Turning on `Auto-run` also turns on `Auto-upload`, because the scheduled loop is designed to publish automatically.
+
+Important: the current version runs this loop in the browser. Keep the app open and keep the computer awake. If the browser tab is closed, the automatic cycle stops.
 
 ## Auto-Uploading To YouTube
 
@@ -270,4 +285,3 @@ Change it to `unlisted` or `public` only when you are ready.
 - Never share your refresh token.
 - Use `private` uploads while testing.
 - If a token leaks, revoke it from your Google account security settings and generate a new one.
-
