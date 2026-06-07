@@ -296,11 +296,12 @@ Recommended: create a fine-grained token.
 6. Resource owner: choose your GitHub account.
 7. Repository access: choose `Only select repositories`.
 8. Select your `ytshort` repository.
-9. Under permissions, find `Actions variables`.
-10. Set `Actions variables` to `Read and write`.
-11. If GitHub requires `Metadata`, leave it as `Read-only`.
-12. Click `Generate token`.
-13. Copy the token immediately.
+9. Under `Repository permissions`, find `Variables`.
+10. Set `Variables` to `Read and write`.
+11. `Actions: Read and write` is not enough for this API. The GitHub REST endpoints used by the app require the separate `Variables` permission.
+12. If GitHub requires `Metadata`, leave it as `Read-only`.
+13. Click `Generate token`.
+14. Copy the token immediately.
 
 If you prefer a classic token:
 
@@ -409,7 +410,7 @@ UPLOAD_SCHEDULE_TIMES=05:00,07:00,09:00,11:00
 UPLOAD_SCHEDULE_TIMEZONE=your_local_timezone
 ```
 
-You do not need to create those three variables manually. If they are missing, the app will create them when you click `Save GitHub Schedule`, as long as `GITHUB_SCHEDULE_TOKEN` has permission to write Actions variables.
+You do not need to create those three variables manually. If they are missing, the app will create them when you click `Save GitHub Schedule`, as long as `GITHUB_SCHEDULE_TOKEN` has the repository `Variables: Read and write` permission.
 
 The workflow also writes this variable after a successful scheduled upload:
 
@@ -501,7 +502,7 @@ Add them to Vercel, then redeploy.
 
 `Could not update GitHub variable`
 
-Your `GITHUB_SCHEDULE_TOKEN` does not have permission to write Actions variables. Create a fine-grained token with `Actions variables: Read and write`.
+Your `GITHUB_SCHEDULE_TOKEN` does not have permission to write repository variables. Create a fine-grained token with repository `Variables: Read and write`.
 
 `APP_BASE_URL is required`
 

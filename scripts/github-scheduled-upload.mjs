@@ -297,8 +297,7 @@ function drawText({ text, x, y, size, color = "white", border = 4 }) {
   const fontFile = process.env.FFMPEG_FONTFILE || "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf";
 
   return [
-    "drawtext",
-    `fontfile=${fontFile}`,
+    "drawtext=fontfile=" + fontFile,
     `text='${escapeDrawText(text)}'`,
     `x=${x}`,
     `y=${y}`,
