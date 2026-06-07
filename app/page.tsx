@@ -4,9 +4,14 @@ import { FFmpeg } from "@ffmpeg/ffmpeg";
 import { fetchFile } from "@ffmpeg/util";
 import {
   AlertCircle,
+  Check,
+  Copy,
   Download,
+  ExternalLink,
+  Lightbulb,
   Loader2,
   Play,
+  Search,
   Upload,
   Wand2
 } from "lucide-react";
@@ -27,6 +32,31 @@ type DownloadedClipResponse = {
   fileName: string;
   size: number;
   downloadUrl: string;
+};
+
+type ViralCandidate = {
+  id: string;
+  url: string;
+  name: string;
+  sourceTitle: string;
+  creator: string;
+  thumbnail: string;
+  duration: number;
+  views: number;
+  likes: number;
+  comments: number;
+  shares: number;
+  score: number;
+};
+
+type ViralIdea = {
+  topic: string;
+  title: string;
+  source: string;
+  description: string;
+  hashtags: string[];
+  candidates: ViralCandidate[];
+  generatedAt: string;
 };
 
 const RANK_COUNT = 5;
@@ -81,6 +111,38 @@ function fileExtension(file: File) {
 
 function extensionFromName(fileName: string) {
   return fileName.split(".").pop()?.toLowerCase() || "mp4";
+}
+
+function formatMetric(value: number) {
+  return Intl.NumberFormat("en", {
+    notation: "compact",
+    maximumFractionDigits: 1
+  }).format(value);
+}
+
+function buildCopyDescription(idea: ViralIdea, selectedCandidates: ViralCandidate[]) {
+  const candidates =
+    selectedCandidates.length === RANK_COUNT
+      ? selectedCandidates
+      : idea.candidates.slice(0, RANK_COUNT);
+  const featureWords = candidates
+    .map((candidate) => candidate.name)
+    .filter(Boolean)
+    .slice(0, 4)
+    .join(", ");
+  const hashtags = idea.hashtags?.length
+    ? idea.hashtags
+    : ["#TikTokRankings", "#Top5", "#ViralTikTok", "#Shorts", "#YouTubeShorts", "#FYP"];
+
+  return [
+    `${idea.title} ranked from #5 to #1.`,
+    featureWords
+      ? `Featuring ${featureWords}. Which clip deserves the top spot?`
+      : "Which clip deserves the top spot?",
+    "Watch until the end and comment your winner.",
+    "",
+    hashtags.join(" ")
+  ].join("\n");
 }
 
 function escapeConcatPath(path: string) {
@@ -398,6 +460,10 @@ export default function Home() {
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [outputBlob, setOutputBlob] = useState<Blob | null>(null);
   const [ffmpegLoaded, setFfmpegLoaded] = useState(false);
+  const [isFindingIdea, setIsFindingIdea] = useState(false);
+  const [viralIdea, setViralIdea] = useState<ViralIdea | null>(null);
+  const [selectedCandidateIds, setSelectedCandidateIds] = useState<string[]>([]);
+  const [copiedDescription, setCopiedDescription] = useState(false);
 
   const ffmpegRef = useRef<FFmpeg | null>(null);
 
@@ -405,6 +471,22 @@ export default function Home() {
     // Clips are intentionally processed in countdown order for ranking videos.
     () => [...entries].sort((a, b) => b.rank - a.rank),
     [entries]
+  );
+  const selectedViralCandidates = useMemo(() => {
+    if (!viralIdea) {
+      return [];
+    }
+
+    return selectedCandidateIds
+      .map((id) => viralIdea.candidates.find((candidate) => candidate.id === id))
+      .filter((candidate): candidate is ViralCandidate => Boolean(candidate));
+  }, [selectedCandidateIds, viralIdea]);
+  const copyPasteDescription = useMemo(
+    () =>
+      viralIdea
+        ? buildCopyDescription(viralIdea, selectedViralCandidates)
+        : "",
+    [selectedViralCandidates, viralIdea]
   );
 
   function updateEntry(rank: number, patch: Partial<RankingEntry>) {
@@ -416,6 +498,118 @@ export default function Home() {
   function handleFileChange(rank: number, event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0] ?? null;
     updateEntry(rank, { file });
+  }
+
+  function applyCandidates(candidates: ViralCandidate[], nextTitle = title) {
+    const selected = candidates.slice(0, RANK_COUNT);
+
+    if (selected.length !== RANK_COUNT) {
+      setErrors((current) => ({
+        ...current,
+        idea: "Select exactly 5 TikTok candidates."
+      }));
+      return;
+    }
+
+    setTitle(nextTitle);
+    setEntries(
+      selected.map((candidate, index) => ({
+        rank: index + 1,
+        name: candidate.name || `@${candidate.creator}`,
+        url: candidate.url,
+        file: null
+      }))
+    );
+    setErrors((current) => {
+      const { idea, ...rest } = current;
+      return rest;
+    });
+    setStatusText("Idea loaded");
+  }
+
+  async function findViralIdea() {
+    if (isFindingIdea || isGenerating) {
+      return;
+    }
+
+    setIsFindingIdea(true);
+    setStatusText("Finding viral idea...");
+    setErrors((current) => {
+      const { idea, generation, ...rest } = current;
+      return rest;
+    });
+
+    try {
+      const response = await fetch("/api/ideas/find", { method: "POST" });
+      const payload = (await response.json()) as Partial<ViralIdea> & { error?: string };
+
+      if (!response.ok || !payload.title || !Array.isArray(payload.candidates)) {
+        throw new Error(payload.error ?? "Could not find a viral idea.");
+      }
+
+      const nextIdea = payload as ViralIdea;
+      const nextSelectedIds = nextIdea.candidates.slice(0, RANK_COUNT).map((candidate) => candidate.id);
+
+      setViralIdea(nextIdea);
+      setSelectedCandidateIds(nextSelectedIds);
+      setCopiedDescription(false);
+      applyCandidates(nextIdea.candidates.slice(0, RANK_COUNT), nextIdea.title);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Could not find a viral idea.";
+      setErrors((current) => ({ ...current, idea: message }));
+      setStatusText("Idea search failed");
+    } finally {
+      setIsFindingIdea(false);
+    }
+  }
+
+  function toggleCandidate(candidateId: string) {
+    setCopiedDescription(false);
+    setSelectedCandidateIds((current) => {
+      if (current.includes(candidateId)) {
+        return current.filter((id) => id !== candidateId);
+      }
+
+      if (current.length >= RANK_COUNT) {
+        return current;
+      }
+
+      return [...current, candidateId];
+    });
+  }
+
+  function applySelectedCandidates() {
+    if (!viralIdea) {
+      return;
+    }
+
+    const selected = selectedCandidateIds
+      .map((id) => viralIdea.candidates.find((candidate) => candidate.id === id))
+      .filter((candidate): candidate is ViralCandidate => Boolean(candidate));
+
+    applyCandidates(selected, viralIdea.title);
+  }
+
+  async function copyDescription() {
+    if (!copyPasteDescription) {
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(copyPasteDescription);
+    } catch {
+      const textarea = document.createElement("textarea");
+      textarea.value = copyPasteDescription;
+      textarea.style.position = "fixed";
+      textarea.style.opacity = "0";
+      document.body.appendChild(textarea);
+      textarea.select();
+      document.execCommand("copy");
+      textarea.remove();
+    }
+
+    setCopiedDescription(true);
+    window.setTimeout(() => setCopiedDescription(false), 1800);
   }
 
   function validateForm() {
@@ -642,6 +836,85 @@ export default function Home() {
             </div>
           </div>
 
+          <section className="idea-panel" aria-label="Viral idea finder">
+            <div className="idea-top">
+              <div>
+                <p className="eyebrow">Automation</p>
+                <h2>Find Viral Idea</h2>
+              </div>
+              <button className="secondary-button idea-button" onClick={findViralIdea} disabled={isFindingIdea || isGenerating}>
+                {isFindingIdea ? <Loader2 size={18} className="spin" /> : <Lightbulb size={18} />}
+                Find Viral Idea
+              </button>
+            </div>
+
+            {viralIdea ? (
+              <div className="idea-result">
+                <div className="idea-summary">
+                  <div>
+                    <strong>{viralIdea.title}</strong>
+                    <span>{viralIdea.source}</span>
+                  </div>
+                  <button
+                    className="secondary-button compact-button"
+                    onClick={applySelectedCandidates}
+                    disabled={selectedCandidateIds.length !== RANK_COUNT}
+                  >
+                    <Check size={17} />
+                    Use Selected 5
+                  </button>
+                </div>
+
+                <div className="candidate-grid">
+                  {viralIdea.candidates.map((candidate) => {
+                    const isSelected = selectedCandidateIds.includes(candidate.id);
+
+                    return (
+                      <label className="candidate-card" data-selected={isSelected} key={candidate.id}>
+                        <input
+                          type="checkbox"
+                          checked={isSelected}
+                          onChange={() => toggleCandidate(candidate.id)}
+                        />
+                        {candidate.thumbnail ? (
+                          <img src={candidate.thumbnail} alt="" />
+                        ) : (
+                          <div className="candidate-placeholder">
+                            <Search size={22} />
+                          </div>
+                        )}
+                        <div className="candidate-info">
+                          <span>@{candidate.creator}</span>
+                          <strong title={candidate.sourceTitle}>{candidate.name}</strong>
+                          <small>
+                            {formatMetric(candidate.views)} views · {formatMetric(candidate.likes)} likes · {candidate.duration}s
+                          </small>
+                        </div>
+                        <a href={candidate.url} target="_blank" rel="noreferrer" aria-label={`Open ${candidate.name}`}>
+                          <ExternalLink size={16} />
+                        </a>
+                      </label>
+                    );
+                  })}
+                </div>
+
+                <div className="description-panel">
+                  <div className="description-head">
+                    <div>
+                      <strong>Copy-paste description</strong>
+                      <span>{viralIdea.hashtags.length} related hashtags</span>
+                    </div>
+                    <button className="secondary-button compact-button" onClick={copyDescription}>
+                      {copiedDescription ? <Check size={17} /> : <Copy size={17} />}
+                      {copiedDescription ? "Copied" : "Copy"}
+                    </button>
+                  </div>
+                  <textarea className="description-area" readOnly value={copyPasteDescription} />
+                </div>
+              </div>
+            ) : null}
+          </section>
+
           <div className="form-grid">
             <label className="field field-wide">
               <span>Main title</span>
@@ -721,7 +994,7 @@ export default function Home() {
           {hasErrors ? (
             <div className="error-panel" role="alert">
               <AlertCircle size={18} />
-              <span>{errors.generation ?? "Some fields need attention."}</span>
+              <span>{errors.generation ?? errors.idea ?? "Some fields need attention."}</span>
             </div>
           ) : null}
 
