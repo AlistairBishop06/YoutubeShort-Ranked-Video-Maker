@@ -137,6 +137,14 @@ async function readVariable(name: string) {
   return payload.value ?? "";
 }
 
+async function readOptionalVariable(name: string) {
+  try {
+    return await readVariable(name);
+  } catch {
+    return "";
+  }
+}
+
 async function upsertVariable(name: string, value: string) {
   const patchResponse = await githubRequest(`/${name}`, {
     method: "PATCH",
@@ -178,12 +186,12 @@ export async function GET() {
   }
 
   try {
-    const [enabled, times, timezone, lastSlot] = await Promise.all([
+    const [enabled, times, timezone] = await Promise.all([
       readVariable(VARIABLE_NAMES.enabled),
       readVariable(VARIABLE_NAMES.times),
-      readVariable(VARIABLE_NAMES.timezone),
-      readVariable(VARIABLE_NAMES.lastSlot)
+      readVariable(VARIABLE_NAMES.timezone)
     ]);
+    const lastSlot = await readOptionalVariable(VARIABLE_NAMES.lastSlot);
 
     return NextResponse.json({
       configured: true,

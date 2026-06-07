@@ -417,6 +417,8 @@ LAST_UPLOAD_SLOT=...
 
 That prevents duplicate uploads if GitHub Actions runs more than once inside the same scheduled window.
 
+You do not need to create `LAST_UPLOAD_SLOT` manually. If you do create it, leave it blank. The workflow fills it after the first successful scheduled upload.
+
 ### Step 10: Test The Workflow Manually
 
 Do this before trusting the schedule.
