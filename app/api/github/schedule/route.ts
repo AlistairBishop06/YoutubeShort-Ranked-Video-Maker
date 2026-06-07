@@ -187,9 +187,9 @@ export async function GET() {
 
   try {
     const [enabled, times, timezone] = await Promise.all([
-      readVariable(VARIABLE_NAMES.enabled),
-      readVariable(VARIABLE_NAMES.times),
-      readVariable(VARIABLE_NAMES.timezone)
+      readOptionalVariable(VARIABLE_NAMES.enabled),
+      readOptionalVariable(VARIABLE_NAMES.times),
+      readOptionalVariable(VARIABLE_NAMES.timezone)
     ]);
     const lastSlot = await readOptionalVariable(VARIABLE_NAMES.lastSlot);
 
