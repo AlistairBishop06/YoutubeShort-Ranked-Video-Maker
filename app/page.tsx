@@ -13,9 +13,10 @@ import {
   Play,
   Search,
   Upload,
-  Wand2
+  Wand2,
+  Youtube
 } from "lucide-react";
-import { ChangeEvent, useMemo, useRef, useState } from "react";
+import { ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
 
 type RankingEntry = {
   rank: number;
@@ -59,10 +60,16 @@ type ViralIdea = {
   generatedAt: string;
 };
 
+type YouTubeStatus = {
+  configured: boolean;
+  missing: string[];
+  privacyStatus: string;
+};
+
 const RANK_COUNT = 5;
 const OUTPUT_WIDTH = 1080;
 const OUTPUT_HEIGHT = 1920;
-const DEFAULT_DURATION_SECONDS = 5;
+const DEFAULT_DURATION_SECONDS = 15;
 
 const initialEntries = Array.from({ length: RANK_COUNT }, (_, index) => ({
   rank: index + 1,
@@ -143,6 +150,29 @@ function buildCopyDescription(idea: ViralIdea, selectedCandidates: ViralCandidat
     "",
     hashtags.join(" ")
   ].join("\n");
+}
+
+function fallbackUploadDescription(title: string, entries: RankingEntry[]) {
+  const names = entries
+    .map((entry) => entry.name.trim())
+    .filter(Boolean)
+    .slice(0, 5);
+
+  return [
+    `${title} ranked from #5 to #1.`,
+    names.length ? `Featuring ${names.join(", ")}. Which clip deserves the top spot?` : "Which clip deserves the top spot?",
+    "Watch until the end and comment your winner.",
+    "",
+    "#Top5 #ViralTikTok #Shorts #YouTubeShorts #FYP #Trending"
+  ].join("\n");
+}
+
+function uploadTagsFromDescription(description: string) {
+  const tags = [...description.matchAll(/#([a-zA-Z0-9_]+)/g)]
+    .map((match) => match[1])
+    .filter(Boolean);
+
+  return [...new Set(tags.length ? tags : ["Top5", "ViralTikTok", "Shorts", "YouTubeShorts"])];
 }
 
 function escapeConcatPath(path: string) {
@@ -464,6 +494,10 @@ export default function Home() {
   const [viralIdea, setViralIdea] = useState<ViralIdea | null>(null);
   const [selectedCandidateIds, setSelectedCandidateIds] = useState<string[]>([]);
   const [copiedDescription, setCopiedDescription] = useState(false);
+  const [autoUploadToYoutube, setAutoUploadToYoutube] = useState(false);
+  const [youtubeStatus, setYoutubeStatus] = useState<YouTubeStatus | null>(null);
+  const [isUploadingYoutube, setIsUploadingYoutube] = useState(false);
+  const [youtubeUploadUrl, setYoutubeUploadUrl] = useState<string | null>(null);
 
   const ffmpegRef = useRef<FFmpeg | null>(null);
 
@@ -488,6 +522,29 @@ export default function Home() {
         : "",
     [selectedViralCandidates, viralIdea]
   );
+  const uploadDescription = copyPasteDescription || fallbackUploadDescription(title, entries);
+  const uploadTags = useMemo(() => uploadTagsFromDescription(uploadDescription), [uploadDescription]);
+
+  useEffect(() => {
+    let isMounted = true;
+
+    fetch("/api/youtube/upload")
+      .then((response) => response.json())
+      .then((payload: YouTubeStatus) => {
+        if (isMounted) {
+          setYoutubeStatus(payload);
+        }
+      })
+      .catch(() => {
+        if (isMounted) {
+          setYoutubeStatus({ configured: false, missing: ["YouTube route unavailable"], privacyStatus: "private" });
+        }
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, []);
 
   function updateEntry(rank: number, patch: Partial<RankingEntry>) {
     setEntries((current) =>
@@ -610,6 +667,28 @@ export default function Home() {
 
     setCopiedDescription(true);
     window.setTimeout(() => setCopiedDescription(false), 1800);
+  }
+
+  async function uploadGeneratedVideo(blob: Blob) {
+    const formData = new FormData();
+    const fileName = `${title.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-") || "ranking-short"}.mp4`;
+
+    formData.set("video", new File([blob], fileName, { type: "video/mp4" }));
+    formData.set("title", title);
+    formData.set("description", uploadDescription);
+    formData.set("tags", uploadTags.join(","));
+
+    const response = await fetch("/api/youtube/upload", {
+      method: "POST",
+      body: formData
+    });
+    const payload = (await response.json()) as { url?: string; error?: string };
+
+    if (!response.ok || !payload.url) {
+      throw new Error(payload.error ?? "YouTube upload failed.");
+    }
+
+    return payload.url;
   }
 
   function validateForm() {
@@ -789,8 +868,25 @@ export default function Home() {
 
       setOutputBlob(blob);
       setPreviewUrl(url);
-      setStatusText("Preview ready");
       setProgress(100);
+
+      if (autoUploadToYoutube) {
+        try {
+          setIsUploadingYoutube(true);
+          setStatusText("Uploading to YouTube...");
+          const uploadUrl = await uploadGeneratedVideo(blob);
+          setYoutubeUploadUrl(uploadUrl);
+          setStatusText("Uploaded to YouTube");
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "YouTube upload failed.";
+          setErrors((current) => ({ ...current, youtube: message }));
+          setStatusText("Preview ready; upload failed");
+        } finally {
+          setIsUploadingYoutube(false);
+        }
+      } else {
+        setStatusText("Preview ready");
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : "Video generation failed.";
       setErrors((current) => ({ ...current, generation: message }));
@@ -830,9 +926,32 @@ export default function Home() {
               <p className="eyebrow">Ranking Short</p>
               <h1>YouTube Shorts ranking video generator</h1>
             </div>
-            <div className="status-pill" data-active={isGenerating}>
-              {isGenerating ? <Loader2 size={16} className="spin" /> : <Play size={16} />}
-              {statusText}
+            <div className="header-tools">
+              <label className="upload-toggle" data-active={autoUploadToYoutube}>
+                <input
+                  type="checkbox"
+                  checked={autoUploadToYoutube}
+                  onChange={(event) => {
+                    setAutoUploadToYoutube(event.target.checked);
+                    setYoutubeUploadUrl(null);
+                  }}
+                />
+                <span className="toggle-track" aria-hidden="true">
+                  <span />
+                </span>
+                <span className="toggle-label">
+                  <strong><Youtube size={15} /> Auto-upload</strong>
+                  <small>
+                    {youtubeStatus?.configured
+                      ? `${youtubeStatus.privacyStatus} upload`
+                      : "setup needed"}
+                  </small>
+                </span>
+              </label>
+              <div className="status-pill" data-active={isGenerating || isUploadingYoutube}>
+                {isGenerating || isUploadingYoutube ? <Loader2 size={16} className="spin" /> : <Play size={16} />}
+                {statusText}
+              </div>
             </div>
           </div>
 
@@ -951,7 +1070,7 @@ export default function Home() {
                       value={entry.name}
                       onChange={(event) => updateEntry(entry.rank, { name: event.target.value })}
                       placeholder={`Rank ${entry.rank} title`}
-                      maxLength={64}
+                      maxLength={90}
                     />
                     {errors[`name-${entry.rank}`] ? (
                       <small className="error-text">{errors[`name-${entry.rank}`]}</small>
@@ -994,7 +1113,16 @@ export default function Home() {
           {hasErrors ? (
             <div className="error-panel" role="alert">
               <AlertCircle size={18} />
-              <span>{errors.generation ?? errors.idea ?? "Some fields need attention."}</span>
+              <span>{errors.generation ?? errors.youtube ?? errors.idea ?? "Some fields need attention."}</span>
+            </div>
+          ) : null}
+
+          {youtubeUploadUrl ? (
+            <div className="upload-success">
+              <Youtube size={18} />
+              <a href={youtubeUploadUrl} target="_blank" rel="noreferrer">
+                Uploaded to YouTube
+              </a>
             </div>
           ) : null}
 

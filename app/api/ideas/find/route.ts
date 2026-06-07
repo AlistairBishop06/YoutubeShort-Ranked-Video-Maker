@@ -38,6 +38,29 @@ type Candidate = {
 };
 
 const FALLBACK_IDEAS = [
+  "sidemen funny moments",
+  "speed funny moments",
+  "kai cenat funny moments",
+  "ishowspeed funny moments",
+  "mrbeast funny moments",
+  "ksi funny moments",
+  "logan paul funny moments",
+  "danny aarons funny moments",
+  "adin ross funny moments",
+  "caseoh funny moments",
+  "fanum funny moments",
+  "beta squad funny moments",
+  "amp funny moments",
+  "nelk boys funny moments",
+  "filly funny moments",
+  "chunkz funny moments",
+  "jidion funny moments",
+  "xqc funny moments",
+  "streamer funny moments",
+  "youtuber funny moments",
+  "youtube funny moments",
+  "twitch funny moments",
+  "creator funny moments",
   "funny pets",
   "skiing fails",
   "gym fails",
@@ -55,6 +78,7 @@ const FALLBACK_IDEAS = [
 const RECENT_TOPIC_LIMIT = 8;
 const SEARCH_BATCH_SIZE = 6;
 const MAX_SEARCH_ATTEMPTS = 30;
+const CREATOR_IDEA_COUNT = 23;
 const recentTopics = globalThis as typeof globalThis & {
   __ytshortRecentIdeaTopics?: Array<{ topic: string; key: string }>;
 };
@@ -86,7 +110,12 @@ const IMPORTANT_WORD_STOPWORDS = new Set([
   "fyp",
   "foryou",
   "foryoupage",
+  "game",
+  "gamer",
+  "games",
   "have",
+  "highlight",
+  "highlights",
   "how",
   "just",
   "like",
@@ -98,11 +127,16 @@ const IMPORTANT_WORD_STOPWORDS = new Set([
   "now",
   "of",
   "off",
+  "official",
   "one",
   "only",
   "part",
+  "prank",
+  "pranks",
   "real",
   "shorts",
+  "streamer",
+  "streamers",
   "that",
   "the",
   "this",
@@ -120,6 +154,57 @@ const IMPORTANT_WORD_STOPWORDS = new Set([
   "you",
   "your"
 ]);
+
+const HANDLE_WORD_PATTERNS = [
+  "clip",
+  "clips",
+  "funny",
+  "moment",
+  "moments",
+  "official",
+  "stream",
+  "streamer",
+  "tiktok",
+  "twitch",
+  "youtube"
+];
+
+const REACTION_LABELS = [
+  "no way he said that",
+  "violation",
+  "instant regret",
+  "he crashed out",
+  "chat went silent",
+  "caught lacking",
+  "bro lost it",
+  "that was personal",
+  "he was not ready",
+  "absolute chaos",
+  "rage moment",
+  "too far",
+  "wild reaction",
+  "awkward silence",
+  "unreal timing"
+];
+
+const CREATOR_LABELS: Record<string, string[]> = {
+  caseoh: ["caseoh crashout", "caseoh got violated", "caseoh rage moment", "chat cooked him"],
+  speed: ["speed lost it", "speed crashout", "speed went crazy", "no way speed said that"],
+  ishowspeed: ["speed lost it", "speed crashout", "speed went crazy", "no way speed said that"],
+  sidemen: ["sidemen violation", "sidemen chaos", "the boys lost it", "sidemen cooked him"],
+  ksi: ["ksi got violated", "ksi crashout", "ksi lost it", "no way ksi said that"],
+  xqc: ["xqc crashout", "xqc lost it", "chat cooked him", "xqc rage moment"],
+  "kai cenat": ["kai lost it", "kai crashout", "kai got violated", "no way kai said that"],
+  mrbeast: ["mrbeast chaos", "no way he did that", "mrbeast went too far", "wild mrbeast moment"],
+  "logan paul": ["logan got cooked", "logan crashout", "no way logan said that", "logan went too far"],
+  "adin ross": ["adin got cooked", "adin crashout", "no way adin said that", "chat cooked him"],
+  "beta squad": ["beta squad violation", "chunkz got cooked", "the room went silent", "they took it too far"],
+  "nelk boys": ["full send chaos", "nelk went too far", "steve got cooked", "prank went wrong"],
+  streamer: ["streamer crashout", "chat went silent", "no way he said that", "live on stream"],
+  youtuber: ["youtuber crashout", "no way he posted that", "creator got cooked", "comments went wild"],
+  youtube: ["youtube chaos", "creator got cooked", "no way he posted that", "comments went wild"],
+  twitch: ["twitch crashout", "chat went silent", "live on stream", "stream went wrong"]
+};
 
 function decodeXml(value: string) {
   return value
@@ -140,7 +225,10 @@ function cleanTopic(value: string) {
 
 function topicKey(value: string) {
   return cleanTopic(value)
-    .replace(/\b(funny|moments|reaction|reactions|tiktok|tiktoks|clips|videos)\b/g, " ")
+    .replace(
+      /\b(funny|moments|reaction|reactions|streamer|streamers|youtuber|youtubers|youtube|twitch|tiktok|tiktoks|clips|videos)\b/g,
+      " "
+    )
     .replace(/\s+/g, " ")
     .trim();
 }
@@ -181,12 +269,38 @@ function sourceTitle(video: TikWMVideo) {
   return "Viral TikTok";
 }
 
-function importantWord(video: TikWMVideo, query: string) {
+function labelSeed(value: string) {
+  let hash = 0;
+
+  for (let index = 0; index < value.length; index += 1) {
+    hash = (hash * 31 + value.charCodeAt(index)) >>> 0;
+  }
+
+  return hash;
+}
+
+function pickBySeed<T>(items: T[], seed: string) {
+  return items[labelSeed(seed) % items.length];
+}
+
+function creatorFromQuery(query: string) {
+  const clean = cleanTopic(query);
+
+  for (const creator of Object.keys(CREATOR_LABELS)) {
+    if (clean.includes(creator)) {
+      return creator;
+    }
+  }
+
+  return "";
+}
+
+function importantWords(video: TikWMVideo, query: string) {
   const title = sourceTitle(video);
   const topicWords = new Set(cleanTopic(query).split(/\s+/).filter(Boolean));
   const compactTopic = cleanTopic(query).replace(/\s+/g, "");
   const rawWords = [...title.matchAll(/#?[\p{L}\p{N}][\p{L}\p{N}'-]*/gu)].map((match) => match[0]);
-  const scored = rawWords
+  return rawWords
     .map((rawWord, index) => {
       const wasHashtag = rawWord.startsWith("#");
       const normalized = cleanTopic(rawWord.replace(/^#/, ""))
@@ -195,7 +309,9 @@ function importantWord(video: TikWMVideo, query: string) {
 
       if (
         normalized.length < 4 ||
+        normalized.length > 14 ||
         IMPORTANT_WORD_STOPWORDS.has(normalized) ||
+        HANDLE_WORD_PATTERNS.some((pattern) => normalized.includes(pattern)) ||
         normalized === compactTopic ||
         compactTopic.includes(normalized) ||
         /\d/.test(normalized)
@@ -210,13 +326,66 @@ function importantWord(video: TikWMVideo, query: string) {
 
       return {
         word: titleCase(normalized),
+        raw: normalized,
         score: lengthScore + hashtagBonus + earlyTitleBonus + repeatedTopicPenalty
       };
     })
-    .filter((item): item is { word: string; score: number } => Boolean(item))
+    .filter((item): item is { word: string; raw: string; score: number } => Boolean(item))
     .sort((a, b) => b.score - a.score);
+}
 
-  return scored[0]?.word ?? titleCase(video.author?.unique_id ?? "Viral");
+function viralClipLabel(video: TikWMVideo, query: string) {
+  const title = cleanTopic(sourceTitle(video));
+  const seed = `${video.video_id ?? ""}:${sourceTitle(video)}:${query}`;
+  const creator = creatorFromQuery(query);
+  const creatorLabels = creator ? CREATOR_LABELS[creator] : null;
+  const words = importantWords(video, query);
+  const topWord = words[0]?.raw ?? "";
+
+  if (creatorLabels && (title.includes("rage") || title.includes("mad") || title.includes("angry"))) {
+    return pickBySeed(creatorLabels.filter((label) => label.includes("crashout") || label.includes("rage")), seed);
+  }
+
+  if (title.includes("violation") || title.includes("violated") || title.includes("roast") || title.includes("cooked")) {
+    return creator ? `${titleCase(creator).toLowerCase()} got violated` : "violation";
+  }
+
+  if (title.includes("crashout") || title.includes("crash out")) {
+    return creator ? `${titleCase(creator).toLowerCase()} crashout` : "he crashed out";
+  }
+
+  if (title.includes("said") || title.includes("says") || title.includes("speechless")) {
+    return creator ? `no way ${titleCase(creator).toLowerCase()} said that` : "no way he said that";
+  }
+
+  if (title.includes("reaction") || title.includes("reacts")) {
+    return creator ? `${titleCase(creator).toLowerCase()} lost it` : "wild reaction";
+  }
+
+  if (title.includes("fail") || title.includes("fails")) {
+    return "instant regret";
+  }
+
+  if (creatorLabels) {
+    return pickBySeed(creatorLabels, seed);
+  }
+
+  return pickBySeed(REACTION_LABELS, seed);
+}
+
+function deDuplicateLabels(candidates: Candidate[]) {
+  const used = new Set<string>();
+
+  return candidates.map((candidate) => {
+    if (!used.has(candidate.name)) {
+      used.add(candidate.name);
+      return candidate;
+    }
+
+    const fallback = REACTION_LABELS.find((label) => !used.has(label)) ?? `${candidate.name} moment`;
+    used.add(fallback);
+    return { ...candidate, name: fallback };
+  });
 }
 
 function scoreVideo(video: TikWMVideo) {
@@ -255,13 +424,12 @@ async function fetchTrendingTerms() {
 
 function buildSearchIdeas(trendingTerms: string[]) {
   const trendIdeas = trendingTerms.flatMap((term) => [
-    term,
-    `${term} funny`,
     `${term} moments`,
+    `${term} funny moments`,
     `${term} reaction`
   ]);
 
-  return [...new Set([...trendIdeas, ...FALLBACK_IDEAS])].slice(0, 28);
+  return [...new Set([...FALLBACK_IDEAS, ...trendIdeas])].slice(0, 44);
 }
 
 function shuffle<T>(items: T[]) {
@@ -310,7 +478,7 @@ async function searchTikWMCandidates(query: string) {
     return [];
   }
 
-  return payload.data.videos
+  const candidates = payload.data.videos
     .filter((video) => {
       const duration = video.duration ?? 0;
       return (
@@ -328,7 +496,7 @@ async function searchTikWMCandidates(query: string) {
       return {
         id,
         url: `https://www.tiktok.com/@${creator}/video/${id}`,
-        name: importantWord(video, query),
+        name: viralClipLabel(video, query),
         sourceTitle: sourceTitle(video),
         creator,
         thumbnail: video.cover ?? "",
@@ -340,6 +508,8 @@ async function searchTikWMCandidates(query: string) {
         score: scoreVideo(video)
       };
     });
+
+  return deDuplicateLabels(candidates);
 }
 
 function uniqueCandidates(candidates: Candidate[]) {
@@ -402,11 +572,25 @@ function buildDescription(title: string, topic: string, candidates: Candidate[])
   };
 }
 
+function generatedTitle(topic: string) {
+  const titled = titleCase(topic);
+
+  if (/\b(funny|moments|fails|reaction|reactions)\b/i.test(topic)) {
+    return `Top 5 ${titled}`;
+  }
+
+  return `Top 5 ${titled} Funny Moments`;
+}
+
 export async function POST() {
   const trendingTerms = await fetchTrendingTerms();
   const recent = getRecentTopics();
   const recentKeys = new Set(recent.map((recentTopic) => recentTopic.key));
-  const ideas = shuffle(buildSearchIdeas(trendingTerms));
+  const allIdeas = buildSearchIdeas(trendingTerms);
+  const ideas = [
+    ...shuffle(allIdeas.slice(0, CREATOR_IDEA_COUNT)),
+    ...shuffle(allIdeas.slice(CREATOR_IDEA_COUNT))
+  ];
   const nonRecentIdeas = ideas.filter((idea) => !recentKeys.has(topicKey(idea)));
   const recentIdeas = ideas.filter((idea) => recentKeys.has(topicKey(idea)));
   const orderedIdeas = [...nonRecentIdeas, ...recentIdeas].slice(0, MAX_SEARCH_ATTEMPTS);
@@ -457,7 +641,7 @@ export async function POST() {
 
   if (selectedIdea) {
     rememberTopic(selectedIdea.idea);
-    const title = `Top 5 ${titleCase(selectedIdea.idea)} TikToks`;
+    const title = generatedTitle(selectedIdea.idea);
     const { description, hashtags } = buildDescription(
       title,
       selectedIdea.idea,
