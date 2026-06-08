@@ -399,8 +399,6 @@ function videoFilters({ activeEntry, orderedEntries, title, duration, fadeDurati
     `crop=${OUTPUT_WIDTH}:${OUTPUT_HEIGHT}`,
     "setsar=1",
     "format=yuv420p",
-    "drawbox=x=0:y=0:w=iw:h=430:color=black@0.66:t=fill",
-    "drawbox=x=0:y=1165:w=iw:h=755:color=black@0.72:t=fill",
     drawText({
       text: truncate(title, 40),
       x: "(w-text_w)/2",

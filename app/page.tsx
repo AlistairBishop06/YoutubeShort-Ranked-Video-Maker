@@ -559,18 +559,6 @@ async function createOverlayPng(
 
   ctx.clearRect(0, 0, OUTPUT_WIDTH, OUTPUT_HEIGHT);
 
-  const topGradient = ctx.createLinearGradient(0, 0, 0, 520);
-  topGradient.addColorStop(0, "rgba(0, 0, 0, 0.84)");
-  topGradient.addColorStop(1, "rgba(0, 0, 0, 0)");
-  ctx.fillStyle = topGradient;
-  ctx.fillRect(0, 0, OUTPUT_WIDTH, 520);
-
-  const bottomGradient = ctx.createLinearGradient(0, 1180, 0, OUTPUT_HEIGHT);
-  bottomGradient.addColorStop(0, "rgba(0, 0, 0, 0)");
-  bottomGradient.addColorStop(1, "rgba(0, 0, 0, 0.88)");
-  ctx.fillStyle = bottomGradient;
-  ctx.fillRect(0, 1180, OUTPUT_WIDTH, 740);
-
   // Text overlays are rendered to a transparent PNG first, then FFmpeg places
   // that PNG on top of each clip. This avoids browser FFmpeg font issues.
   ctx.textAlign = "center";
