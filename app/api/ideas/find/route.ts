@@ -202,10 +202,25 @@ const RECENT_CANDIDATE_LIMIT = 120;
 const SEARCH_BATCH_SIZE = 6;
 const MAX_SEARCH_ATTEMPTS = 42;
 const SEARCH_CANDIDATE_COUNT = 30;
+const PREFERRED_MAX_SOURCE_SECONDS = 60;
+const HARD_MAX_SOURCE_SECONDS = 90;
 const recentTopics = globalThis as typeof globalThis & {
   __ytshortRecentIdeaTopics?: Array<{ topic: string; key: string }>;
   __ytshortRecentCandidateIds?: string[];
 };
+
+const REJECT_SOURCE_PATTERNS = [
+  /\btop\s*\d+\b/i,
+  /\brank(?:ing|ed|s)?\b/i,
+  /\bcompilation\b/i,
+  /\bcomp\b/i,
+  /\bbest\s+tiktoks?\b/i,
+  /\btiktok\s+compilation\b/i,
+  /\btry\s+not\s+to\s+laugh\s+compilation\b/i,
+  /\bfull\s+(?:video|stream|episode)\b/i,
+  /\bpart\s*\d+\b/i,
+  /\breupload\b/i
+];
 
 const IMPORTANT_WORD_STOPWORDS = new Set([
   "about",
@@ -518,10 +533,23 @@ function scoreVideo(video: TikWMVideo) {
   const comments = video.comment_count ?? 0;
   const shares = video.share_count ?? 0;
   const saves = video.collect_count ?? 0;
+  const duration = video.duration ?? 0;
+  const durationMultiplier = duration > PREFERRED_MAX_SOURCE_SECONDS ? 0.42 : duration > 45 ? 0.72 : 1;
 
   // Engagement is weighted higher than raw views so the selected clips are more
   // likely to feel worth ranking instead of merely being broad search matches.
-  return views + likes * 8 + comments * 18 + shares * 24 + saves * 12;
+  return (views + likes * 8 + comments * 18 + shares * 24 + saves * 12) * durationMultiplier;
+}
+
+function isRejectedSourceVideo(video: TikWMVideo) {
+  const title = sourceTitle(video);
+  const duration = video.duration ?? 0;
+
+  if (duration < 3 || duration > HARD_MAX_SOURCE_SECONDS) {
+    return true;
+  }
+
+  return REJECT_SOURCE_PATTERNS.some((pattern) => pattern.test(title));
 }
 
 async function fetchTrendingTerms() {
@@ -626,8 +654,9 @@ async function searchTikWMCandidates(query: string, cursor = 0) {
         !video.is_ad &&
         Boolean(video.video_id) &&
         Boolean(video.author?.unique_id) &&
+        !isRejectedSourceVideo(video) &&
         duration >= 3 &&
-        duration <= 120
+        duration <= HARD_MAX_SOURCE_SECONDS
       );
     })
     .map<Candidate>((video) => {

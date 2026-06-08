@@ -57,6 +57,36 @@ http://127.0.0.1:3000
 
 TikTok clips are downloaded into `.tmp/tiktok-clips` temporarily and cleaned up after generation.
 
+## Smart Highlights And Clip Filtering
+
+The app defaults to `Smart highlights` mode.
+
+In this mode:
+
+1. Short clips play for their actual length instead of being padded with silence.
+2. Long clips are capped by `Seconds per clip`.
+3. Long clips are analyzed for audio energy, then the highest-energy window is used instead of always starting at `0:00`.
+4. TikToks that look like someone else's ranking, compilation, or repost are filtered out before selection.
+
+The candidate finder rejects titles that contain patterns like:
+
+```text
+top 5
+top 10
+ranking
+ranked
+compilation
+best tiktoks
+try not to laugh compilation
+full video
+part 2
+reupload
+```
+
+It also rejects source TikToks longer than 90 seconds and downranks clips longer than 60 seconds.
+
+Use `Fixed start` only when you specifically want every clip to start at the beginning and use the same fixed duration.
+
 ## Auto-Run Every 15 Minutes
 
 The `Auto-run` toggle in the top bar starts a repeating 15-minute loop:
@@ -265,17 +295,27 @@ Value: 15
 15. Add:
 
 ```text
+Name: CLIP_MODE
+Value: smart
+```
+
+16. Click `Add variable`.
+17. Click `New repository variable`.
+18. Add:
+
+```text
 Name: UPLOAD_SCHEDULE_WINDOW_MINUTES
 Value: 15
 ```
 
-16. Click `Add variable`.
+19. Click `Add variable`.
 
 Recommended variables summary:
 
 ```text
 YOUTUBE_PRIVACY_STATUS=private
 YOUTUBE_CATEGORY_ID=24
+CLIP_MODE=smart
 CLIP_DURATION_SECONDS=15
 UPLOAD_SCHEDULE_WINDOW_MINUTES=15
 ```

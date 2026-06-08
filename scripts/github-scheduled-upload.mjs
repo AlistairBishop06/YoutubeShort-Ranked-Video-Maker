@@ -301,6 +301,83 @@ async function hasAudioStream(inputPath) {
   }
 }
 
+async function probeDuration(inputPath) {
+  try {
+    const { stdout } = await execFileAsync(
+      "ffprobe",
+      ["-v", "error", "-show_entries", "format=duration", "-of", "default=nw=1:nk=1", inputPath],
+      { maxBuffer: 1024 * 1024 }
+    );
+    const duration = Number.parseFloat(stdout.trim());
+
+    return Number.isFinite(duration) ? duration : 0;
+  } catch {
+    return 0;
+  }
+}
+
+async function audioHighlightStart(inputPath, sourceDuration, windowSeconds) {
+  try {
+    const { stdout } = await execFileAsync(
+      "ffmpeg",
+      ["-v", "error", "-i", inputPath, "-vn", "-ac", "1", "-ar", "16000", "-f", "s16le", "pipe:1"],
+      { encoding: "buffer", maxBuffer: 1024 * 1024 * 16 }
+    );
+    const sampleRate = 16000;
+    const sampleCount = Math.floor(stdout.length / 2);
+    const windowSamples = Math.max(1, Math.floor(windowSeconds * sampleRate));
+    const stepSamples = Math.max(1, Math.floor(0.5 * sampleRate));
+    const sampleStride = 160;
+    const maxStartSample = Math.max(0, sampleCount - windowSamples);
+    let bestStartSample = 0;
+    let bestScore = -Infinity;
+
+    for (let startSample = 0; startSample <= maxStartSample; startSample += stepSamples) {
+      const endSample = Math.min(sampleCount, startSample + windowSamples);
+      let total = 0;
+      let samples = 0;
+
+      for (let sample = startSample; sample < endSample; sample += sampleStride) {
+        const value = stdout.readInt16LE(sample * 2) / 32768;
+        total += value * value;
+        samples += 1;
+      }
+
+      const rms = samples ? Math.sqrt(total / samples) : 0;
+      const centerBias = 1 - Math.abs(startSample / Math.max(1, maxStartSample) - 0.5) * 0.08;
+      const score = rms * centerBias;
+
+      if (score > bestScore) {
+        bestScore = score;
+        bestStartSample = startSample;
+      }
+    }
+
+    return Math.max(0, Math.min(bestStartSample / sampleRate, sourceDuration - windowSeconds));
+  } catch {
+    return Math.max(0, (sourceDuration - windowSeconds) / 2);
+  }
+}
+
+async function clipPlan(inputPath, sourceDurationHint, maxDuration) {
+  if (process.env.CLIP_MODE === "fixed") {
+    return { start: 0, duration: maxDuration };
+  }
+
+  const measuredDuration = await probeDuration(inputPath);
+  const sourceDuration = Math.max(0.5, measuredDuration || sourceDurationHint || maxDuration);
+  const duration = Math.min(maxDuration, sourceDuration);
+
+  if (sourceDuration <= maxDuration + 0.25) {
+    return { start: 0, duration };
+  }
+
+  return {
+    start: await audioHighlightStart(inputPath, sourceDuration, duration),
+    duration
+  };
+}
+
 function drawText({ text, x, y, size, color = "white", border = 4 }) {
   const fontFile = process.env.FFMPEG_FONTFILE || "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf";
 
@@ -385,10 +462,11 @@ function videoFilters({ activeEntry, orderedEntries, title, duration, fadeDurati
   return filters.join(",");
 }
 
-async function renderSegment({ activeEntry, duration, inputPath, orderedEntries, outputPath, title }) {
+async function renderSegment({ activeEntry, duration, inputPath, orderedEntries, outputPath, startTime, title }) {
   const fadeDuration = Math.min(0.25, duration / 4);
   const fadeOutStart = Math.max(duration - fadeDuration, 0).toFixed(2);
   const durationText = duration.toFixed(2);
+  const startTimeText = startTime.toFixed(2);
   const filter = videoFilters({
     activeEntry,
     orderedEntries,
@@ -427,6 +505,8 @@ async function renderSegment({ activeEntry, duration, inputPath, orderedEntries,
   if (hasAudio) {
     await run("ffmpeg", [
       "-y",
+      "-ss",
+      startTimeText,
       "-i",
       inputPath,
       "-t",
@@ -440,6 +520,8 @@ async function renderSegment({ activeEntry, duration, inputPath, orderedEntries,
 
   await run("ffmpeg", [
     "-y",
+    "-ss",
+    startTimeText,
     "-i",
     inputPath,
     "-f",
@@ -478,6 +560,7 @@ async function renderRankingVideo({ idea, selectedCandidates, workDir }) {
         rank,
         id: candidate.id,
         name: cleanText(candidate.name, `Rank ${rank}`),
+        sourceDuration: candidate.duration || 0,
         url: candidate.url,
         inputPath
       });
@@ -496,13 +579,17 @@ async function renderRankingVideo({ idea, selectedCandidates, workDir }) {
 
   for (const [index, entry] of orderedEntries.entries()) {
     const outputPath = join(workDir, `segment-${index}.mp4`);
-    console.log(`Rendering #${entry.rank}`);
+    const plan = await clipPlan(entry.inputPath, entry.sourceDuration, duration);
+    console.log(
+      `Rendering #${entry.rank} from ${plan.start.toFixed(2)}s for ${plan.duration.toFixed(2)}s`
+    );
     await renderSegment({
       activeEntry: entry,
-      duration,
+      duration: plan.duration,
       inputPath: entry.inputPath,
       orderedEntries,
       outputPath,
+      startTime: plan.start,
       title: idea.title
     });
     segmentPaths.push(outputPath);

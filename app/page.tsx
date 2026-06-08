@@ -25,6 +25,7 @@ type RankingEntry = {
   name: string;
   url: string;
   file: File | null;
+  duration?: number;
 };
 
 type FieldErrors = Record<string, string>;
@@ -87,6 +88,11 @@ type GenerateVideoOptions = {
   tags?: string[];
 };
 
+type ClipPlan = {
+  duration: number;
+  start: number;
+};
+
 const RANK_COUNT = 5;
 const OUTPUT_WIDTH = 1080;
 const OUTPUT_HEIGHT = 1920;
@@ -106,7 +112,8 @@ function entriesFromCandidates(candidates: ViralCandidate[]) {
     rank: index + 1,
     name: candidate.name || `@${candidate.creator}`,
     url: candidate.url,
-    file: null
+    file: null,
+    duration: candidate.duration
   }));
 }
 
@@ -442,6 +449,99 @@ async function canvasToPngBytes(canvas: HTMLCanvasElement) {
   return new Uint8Array(await blob.arrayBuffer());
 }
 
+async function videoDurationFromFile(file: File) {
+  const url = URL.createObjectURL(file);
+
+  try {
+    const video = document.createElement("video");
+    video.preload = "metadata";
+    video.src = url;
+
+    await new Promise<void>((resolve, reject) => {
+      video.onloadedmetadata = () => resolve();
+      video.onerror = () => reject(new Error("Could not read video metadata."));
+    });
+
+    return Number.isFinite(video.duration) ? video.duration : 0;
+  } catch {
+    return 0;
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+async function audioHighlightStartFromFile(file: File, sourceDuration: number, windowSeconds: number) {
+  const AudioContextConstructor =
+    window.AudioContext ||
+    (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+
+  if (!AudioContextConstructor) {
+    return Math.max(0, (sourceDuration - windowSeconds) / 2);
+  }
+
+  const audioContext = new AudioContextConstructor();
+
+  try {
+    const decoded = await audioContext.decodeAudioData(await file.arrayBuffer());
+    const sampleRate = decoded.sampleRate;
+    const windowSamples = Math.max(1, Math.floor(windowSeconds * sampleRate));
+    const stepSamples = Math.max(1, Math.floor(0.5 * sampleRate));
+    const sampleStride = Math.max(1, Math.floor(sampleRate / 200));
+    const maxStartSample = Math.max(0, decoded.length - windowSamples);
+    let bestStartSample = 0;
+    let bestScore = -Infinity;
+
+    for (let startSample = 0; startSample <= maxStartSample; startSample += stepSamples) {
+      const endSample = Math.min(decoded.length, startSample + windowSamples);
+      let total = 0;
+      let samples = 0;
+
+      for (let channel = 0; channel < decoded.numberOfChannels; channel += 1) {
+        const data = decoded.getChannelData(channel);
+
+        for (let index = startSample; index < endSample; index += sampleStride) {
+          total += data[index] * data[index];
+          samples += 1;
+        }
+      }
+
+      const rms = samples ? Math.sqrt(total / samples) : 0;
+      const centerBias = 1 - Math.abs(startSample / Math.max(1, maxStartSample) - 0.5) * 0.08;
+      const score = rms * centerBias;
+
+      if (score > bestScore) {
+        bestScore = score;
+        bestStartSample = startSample;
+      }
+    }
+
+    return Math.max(0, Math.min(bestStartSample / sampleRate, sourceDuration - windowSeconds));
+  } catch {
+    return Math.max(0, (sourceDuration - windowSeconds) / 2);
+  } finally {
+    await audioContext.close();
+  }
+}
+
+async function browserClipPlan(entry: RankingEntry, maxDuration: number, smartHighlights: boolean) {
+  if (!smartHighlights || !entry.file) {
+    return { start: 0, duration: maxDuration };
+  }
+
+  const measuredDuration = await videoDurationFromFile(entry.file);
+  const sourceDuration = measuredDuration || entry.duration || maxDuration;
+  const safeSourceDuration = Math.max(0.5, sourceDuration);
+  const clipDuration = Math.min(maxDuration, safeSourceDuration);
+
+  if (safeSourceDuration <= maxDuration + 0.25) {
+    return { start: 0, duration: clipDuration };
+  }
+
+  const start = await audioHighlightStartFromFile(entry.file, safeSourceDuration, clipDuration);
+
+  return { start, duration: clipDuration };
+}
+
 async function createOverlayPng(
   title: string,
   activeEntry: RankingEntry,
@@ -580,6 +680,7 @@ async function renderSegment({
   inputName,
   overlayName,
   segmentName,
+  startTimeText,
   durationText,
   fadeDuration,
   fadeOutStart
@@ -588,6 +689,7 @@ async function renderSegment({
   inputName: string;
   overlayName: string;
   segmentName: string;
+  startTimeText: string;
   durationText: string;
   fadeDuration: number;
   fadeOutStart: string;
@@ -626,6 +728,8 @@ async function renderSegment({
     // video. Audio is normalized so every segment can be concatenated safely.
     await ffmpeg.exec([
       "-y",
+      "-ss",
+      startTimeText,
       "-i",
       inputName,
       "-loop",
@@ -643,6 +747,8 @@ async function renderSegment({
     // so the final MP4 still has a stable audio track.
     await ffmpeg.exec([
       "-y",
+      "-ss",
+      startTimeText,
       "-i",
       inputName,
       "-loop",
@@ -669,6 +775,7 @@ export default function Home() {
   // processing all use the same five ranked entries.
   const [title, setTitle] = useState("Top 5 Funniest TikToks This Week");
   const [duration, setDuration] = useState(DEFAULT_DURATION_SECONDS);
+  const [smartHighlights, setSmartHighlights] = useState(true);
   const [entries, setEntries] = useState<RankingEntry[]>(initialEntries);
   const [errors, setErrors] = useState<FieldErrors>({});
   const [isGenerating, setIsGenerating] = useState(false);
@@ -910,7 +1017,7 @@ export default function Home() {
 
   function handleFileChange(rank: number, event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0] ?? null;
-    updateEntry(rank, { file });
+    updateEntry(rank, { file, duration: undefined });
   }
 
   async function saveGithubSchedule() {
@@ -1295,9 +1402,6 @@ export default function Home() {
 
       const ffmpeg = await getFfmpeg();
       const segmentNames: string[] = [];
-      const durationText = duration.toFixed(2);
-      const fadeDuration = Math.min(0.25, duration / 4);
-      const fadeOutStart = Math.max(duration - fadeDuration, 0).toFixed(2);
       const orderedResolvedEntries = [...resolvedEntries].sort((a, b) => b.rank - a.rank);
 
       for (const [index, entry] of orderedResolvedEntries.entries()) {
@@ -1309,8 +1413,16 @@ export default function Home() {
         const overlayName = `overlay-${entry.rank}.png`;
         const segmentName = `segment-${index}.mp4`;
 
-        setStatusText(`Preparing #${entry.rank}...`);
+        setStatusText(
+          smartHighlights ? `Finding highlight for #${entry.rank}...` : `Preparing #${entry.rank}...`
+        );
         setProgress(20 + Math.round((index / RANK_COUNT) * 70));
+
+        const clipPlan = await browserClipPlan(entry, duration, smartHighlights);
+        const durationText = clipPlan.duration.toFixed(2);
+        const startTimeText = clipPlan.start.toFixed(2);
+        const fadeDuration = Math.min(0.25, clipPlan.duration / 4);
+        const fadeOutStart = Math.max(clipPlan.duration - fadeDuration, 0).toFixed(2);
 
         await ffmpeg.writeFile(inputName, await fetchFile(entry.file));
         await ffmpeg.writeFile(
@@ -1327,6 +1439,7 @@ export default function Home() {
           inputName,
           overlayName,
           segmentName,
+          startTimeText,
           durationText,
           fadeDuration,
           fadeOutStart
@@ -1652,6 +1765,18 @@ export default function Home() {
                 onChange={(event) => setDuration(Number(event.target.value))}
               />
               {errors.duration ? <small className="error-text">{errors.duration}</small> : null}
+            </label>
+
+            <label className="field mode-field">
+              <span>Clip mode</span>
+              <button
+                type="button"
+                className="mode-toggle"
+                data-active={smartHighlights}
+                onClick={() => setSmartHighlights((current) => !current)}
+              >
+                {smartHighlights ? "Smart highlights" : "Fixed start"}
+              </button>
             </label>
           </div>
 

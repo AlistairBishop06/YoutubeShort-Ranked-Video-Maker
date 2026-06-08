@@ -25,6 +25,7 @@ jobs:
     timeout-minutes: 60
     env:
       APP_BASE_URL: ${{ secrets.APP_BASE_URL || vars.APP_BASE_URL }}
+      CLIP_MODE: ${{ vars.CLIP_MODE || 'smart' }}
       CLIP_DURATION_SECONDS: ${{ vars.CLIP_DURATION_SECONDS || '15' }}
       FORCE_UPLOAD: ${{ github.event_name == 'workflow_dispatch' && inputs.force && 'true' || 'false' }}
       GITHUB_TOKEN: ${{ github.token }}
