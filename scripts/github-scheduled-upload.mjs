@@ -15,6 +15,7 @@ const OUTPUT_WIDTH = 1080;
 const OUTPUT_HEIGHT = 1920;
 const DEFAULT_DURATION_SECONDS = 15;
 const HOOK_DURATION_SECONDS = 5;
+const SFX_SAMPLE_RATE = 44100;
 const DEFAULT_WINDOW_MINUTES = 15;
 
 const youtubeDl = createYoutubeDl(
@@ -215,6 +216,97 @@ function titleTextLayout(title) {
   }
 
   return { lines, size: 46, lineHeight: 56 };
+}
+
+function randomItem(items) {
+  return items[Math.floor(Math.random() * items.length)];
+}
+
+function hookTeaserLines(value) {
+  const lower = cleanText(value).toLowerCase();
+  const primary = [
+    "WAIT FOR #1",
+    "#1 IS UNREAL",
+    "THIS GETS WORSE",
+    "THE LAST ONE WINS",
+    "DO NOT MISS #1"
+  ];
+
+  if (lower.includes("stream") || lower.includes("twitch") || lower.includes("speed")) {
+    primary.push("CHAT WAS NOT READY", "THE STREAM WENT WILD");
+  }
+
+  if (lower.includes("fail") || lower.includes("crashout")) {
+    primary.push("INSTANT REGRET", "THIS WAS A VIOLATION");
+  }
+
+  return {
+    primary: randomItem(primary)
+  };
+}
+
+function hookTeaserLayout(value) {
+  const lines = wrapTextByCharacters(value, 13);
+
+  if (lines.length <= 1) {
+    return { lines, size: 100, lineHeight: 112 };
+  }
+
+  return { lines, size: 82, lineHeight: 94 };
+}
+
+function impactSfxWavBuffer() {
+  const durationSeconds = 0.48;
+  const channels = 2;
+  const bitsPerSample = 16;
+  const sampleCount = Math.floor(SFX_SAMPLE_RATE * durationSeconds);
+  const dataBytes = sampleCount * channels * (bitsPerSample / 8);
+  const buffer = Buffer.alloc(44 + dataBytes);
+  let offset = 0;
+
+  const writeString = (value) => {
+    buffer.write(value, offset, "ascii");
+    offset += value.length;
+  };
+  const writeUInt32 = (value) => {
+    buffer.writeUInt32LE(value, offset);
+    offset += 4;
+  };
+  const writeUInt16 = (value) => {
+    buffer.writeUInt16LE(value, offset);
+    offset += 2;
+  };
+
+  writeString("RIFF");
+  writeUInt32(36 + dataBytes);
+  writeString("WAVE");
+  writeString("fmt ");
+  writeUInt32(16);
+  writeUInt16(1);
+  writeUInt16(channels);
+  writeUInt32(SFX_SAMPLE_RATE);
+  writeUInt32(SFX_SAMPLE_RATE * channels * (bitsPerSample / 8));
+  writeUInt16(channels * (bitsPerSample / 8));
+  writeUInt16(bitsPerSample);
+  writeString("data");
+  writeUInt32(dataBytes);
+
+  for (let sampleIndex = 0; sampleIndex < sampleCount; sampleIndex += 1) {
+    const t = sampleIndex / SFX_SAMPLE_RATE;
+    const envelope = Math.exp(-t * 8.5);
+    const kick = Math.sin(2 * Math.PI * (132 * t - 56 * t * t)) * envelope;
+    const click = Math.sin(2 * Math.PI * 760 * t) * Math.exp(-t * 22);
+    const noise = (Math.random() * 2 - 1) * Math.exp(-t * 32);
+    const mixed = Math.max(-1, Math.min(1, (kick * 0.72 + click * 0.22 + noise * 0.12) * 0.58));
+    const pcm = Math.round(mixed * 32767);
+
+    for (let channel = 0; channel < channels; channel += 1) {
+      buffer.writeInt16LE(pcm, offset);
+      offset += 2;
+    }
+  }
+
+  return buffer;
 }
 
 function emojiPackForTitle(value) {
@@ -432,10 +524,9 @@ async function clipPlan(inputPath, sourceDurationHint, maxDuration) {
   return smartClipPlan(inputPath, sourceDurationHint, maxDuration);
 }
 
-function drawText({ text, x, y, size, color = "white", border = 4 }) {
+function drawText({ text, x, y, size, color = "white", border = 4, enable }) {
   const fontFile = process.env.FFMPEG_FONTFILE || "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf";
-
-  return [
+  const parts = [
     "drawtext=fontfile=" + fontFile,
     `text='${escapeDrawText(text)}'`,
     `x=${x}`,
@@ -444,12 +535,38 @@ function drawText({ text, x, y, size, color = "white", border = 4 }) {
     `fontcolor=${color}`,
     `borderw=${border}`,
     "bordercolor=black@0.82"
-  ].join(":");
+  ];
+
+  if (enable) {
+    parts.push(`enable='${enable}'`);
+  }
+
+  return parts.join(":");
 }
 
-function videoFilters({ activeEntry, orderedEntries, title, duration, fadeDuration, fadeOutStart }) {
+function progressBarGraph(inputLabel, outputLabel, duration) {
+  const safeDuration = Math.max(0.1, Number.parseFloat(String(duration))).toFixed(2);
+  const y = OUTPUT_HEIGHT - 22;
+  const xExpression = `max(-w\\,min(0\\,-w+w*t/${safeDuration}))`;
+
+  return [
+    `color=c=0x39ff88@0.95:s=${OUTPUT_WIDTH}x18:r=30:d=${duration},format=rgba[progressBar]`,
+    `[${inputLabel}]drawbox=x=0:y=${y}:w=iw:h=18:color=white@0.18:t=fill[progressBase]`,
+    `[progressBase][progressBar]overlay=x='${xExpression}':y=${y}:format=auto,format=yuv420p[${outputLabel}]`
+  ].join(";");
+}
+
+function videoFilters({
+  activeEntry,
+  orderedEntries,
+  title,
+  duration,
+  fadeDuration,
+  fadeOutStart
+}) {
   const titleLayout = titleTextLayout(title);
   const filters = [
+    "setpts=PTS-STARTPTS",
     `scale=${OUTPUT_WIDTH}:${OUTPUT_HEIGHT}:force_original_aspect_ratio=increase`,
     `crop=${OUTPUT_WIDTH}:${OUTPUT_HEIGHT}`,
     "setsar=1",
@@ -468,6 +585,15 @@ function videoFilters({ activeEntry, orderedEntries, title, duration, fadeDurati
   });
 
   filters.push(
+    drawText({
+      text: `#${activeEntry.rank}`,
+      x: "(w-text_w)/2",
+      y: 625,
+      size: 290,
+      color: "0x39ff88",
+      border: 10,
+      enable: "between(t\\,0\\,0.80)"
+    }),
     drawText({
       text: `#${activeEntry.rank}`,
       x: 70,
@@ -511,19 +637,23 @@ function videoFilters({ activeEntry, orderedEntries, title, duration, fadeDurati
     );
   });
 
-  filters.push(
-    `fade=t=in:st=0:d=${fadeDuration}`,
-    `fade=t=out:st=${fadeOutStart}:d=${fadeDuration}`,
-    `trim=0:${duration}`,
-    "setpts=PTS-STARTPTS"
-  );
-
-  return filters.join(",");
+  return [
+    `[0:v]${filters.join(",")}[rankBase]`,
+    progressBarGraph("rankBase", "rankProgress", duration),
+    `[rankProgress]fade=t=in:st=0:d=${fadeDuration},fade=t=out:st=${fadeOutStart}:d=${fadeDuration},trim=0:${duration},setpts=PTS-STARTPTS[v]`
+  ].join(";");
 }
 
-function hookVideoFilters({ title, duration, fadeDuration, fadeOutStart }) {
+function hookVideoFilters({
+  title,
+  duration,
+  fadeDuration,
+  fadeOutStart,
+  teaser
+}) {
   const titleLayout = titleTextLayout(title);
   const filters = [
+    "setpts=PTS-STARTPTS",
     `scale=${OUTPUT_WIDTH}:${OUTPUT_HEIGHT}:force_original_aspect_ratio=increase`,
     `crop=${OUTPUT_WIDTH}:${OUTPUT_HEIGHT}`,
     "setsar=1",
@@ -541,41 +671,39 @@ function hookVideoFilters({ title, duration, fadeDuration, fadeOutStart }) {
     }));
   });
 
-  filters.push(
-    drawText({
-      text: "WAIT FOR #1",
-      x: "(w-text_w)/2",
-      y: 1190,
-      size: 108,
-      color: "0x39ff88",
-      border: 7
-    }),
-    drawText({
-      text: "TOP 5 STARTS NOW",
-      x: "(w-text_w)/2",
-      y: 1330,
-      size: 64,
-      color: "white",
-      border: 5
-    }),
-    drawText({
-      text: "DO NOT BLINK",
-      x: "(w-text_w)/2",
-      y: 1426,
-      size: 46,
-      color: "0xffe66d",
-      border: 5
-    }),
-    `fade=t=in:st=0:d=${fadeDuration}`,
-    `fade=t=out:st=${fadeOutStart}:d=${fadeDuration}`,
-    `trim=0:${duration}`,
-    "setpts=PTS-STARTPTS"
+  const teaserLayout = hookTeaserLayout(teaser.primary);
+  const teaserStartY = Math.round(
+    1190 - ((teaserLayout.lines.length - 1) * teaserLayout.lineHeight) / 2
   );
 
-  return filters.join(",");
+  teaserLayout.lines.forEach((line, index) => {
+    filters.push(drawText({
+      text: line,
+      x: "(w-text_w)/2",
+      y: teaserStartY + index * teaserLayout.lineHeight,
+      size: teaserLayout.size,
+      color: "0x39ff88",
+      border: 7
+    }));
+  });
+
+  return [
+    `[0:v]${filters.join(",")}[hookBase]`,
+    progressBarGraph("hookBase", "hookProgress", duration),
+    `[hookProgress]fade=t=in:st=0:d=${fadeDuration},fade=t=out:st=${fadeOutStart}:d=${fadeDuration},trim=0:${duration},setpts=PTS-STARTPTS[v]`
+  ].join(";");
 }
 
-async function renderSegment({ activeEntry, duration, inputPath, orderedEntries, outputPath, startTime, title }) {
+async function renderSegment({
+  activeEntry,
+  duration,
+  inputPath,
+  orderedEntries,
+  outputPath,
+  sfxPath,
+  startTime,
+  title
+}) {
   const fadeDuration = Math.min(0.25, duration / 4);
   const fadeOutStart = Math.max(duration - fadeDuration, 0).toFixed(2);
   const durationText = duration.toFixed(2);
@@ -589,6 +717,10 @@ async function renderSegment({ activeEntry, duration, inputPath, orderedEntries,
     fadeOutStart
   });
   const hasAudio = await hasAudioStream(inputPath);
+  const sourceAudioFilter = `[0:a]atrim=0:${durationText},asetpts=PTS-STARTPTS,apad=pad_dur=${durationText},atrim=0:${durationText},aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo[clipa]`;
+  const sfxAudioFilter = `[1:a]atrim=0:${durationText},asetpts=PTS-STARTPTS,apad=pad_dur=${durationText},atrim=0:${durationText},volume=0.52,aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo[sfx]`;
+  const mixedAudioFilter = "[clipa][sfx]amix=inputs=2:duration=first:dropout_transition=0,volume=1.05[a]";
+  const silentAudioFilter = `[2:a]atrim=0:${durationText},asetpts=PTS-STARTPTS,aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo[clipa]`;
   const outputArgs = [
     "-map",
     "[v]",
@@ -622,10 +754,12 @@ async function renderSegment({ activeEntry, duration, inputPath, orderedEntries,
       startTimeText,
       "-i",
       inputPath,
+      "-i",
+      sfxPath,
       "-t",
       durationText,
       "-filter_complex",
-      `[0:v]${filter}[v];[0:a]atrim=0:${durationText},asetpts=PTS-STARTPTS,apad=pad_dur=${durationText},atrim=0:${durationText},aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo[a]`,
+      `${filter};${sourceAudioFilter};${sfxAudioFilter};${mixedAudioFilter}`,
       ...outputArgs
     ]);
     return;
@@ -637,6 +771,8 @@ async function renderSegment({ activeEntry, duration, inputPath, orderedEntries,
     startTimeText,
     "-i",
     inputPath,
+    "-i",
+    sfxPath,
     "-f",
     "lavfi",
     "-t",
@@ -646,12 +782,20 @@ async function renderSegment({ activeEntry, duration, inputPath, orderedEntries,
     "-t",
     durationText,
     "-filter_complex",
-    `[0:v]${filter}[v];[1:a]atrim=0:${durationText},asetpts=PTS-STARTPTS,aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo[a]`,
+    `${filter};${silentAudioFilter};${sfxAudioFilter};${mixedAudioFilter}`,
     ...outputArgs
   ]);
 }
 
-async function renderHookSegment({ duration, inputPath, outputPath, startTime, title }) {
+async function renderHookSegment({
+  duration,
+  inputPath,
+  outputPath,
+  sfxPath,
+  startTime,
+  teaser,
+  title
+}) {
   const fadeDuration = Math.min(0.25, duration / 4);
   const fadeOutStart = Math.max(duration - fadeDuration, 0).toFixed(2);
   const durationText = duration.toFixed(2);
@@ -660,9 +804,14 @@ async function renderHookSegment({ duration, inputPath, outputPath, startTime, t
     title,
     duration: durationText,
     fadeDuration,
-    fadeOutStart
+    fadeOutStart,
+    teaser
   });
   const hasAudio = await hasAudioStream(inputPath);
+  const sourceAudioFilter = `[0:a]atrim=0:${durationText},asetpts=PTS-STARTPTS,apad=pad_dur=${durationText},atrim=0:${durationText},aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo[clipa]`;
+  const sfxAudioFilter = `[1:a]atrim=0:${durationText},asetpts=PTS-STARTPTS,apad=pad_dur=${durationText},atrim=0:${durationText},volume=0.52,aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo[sfx]`;
+  const mixedAudioFilter = "[clipa][sfx]amix=inputs=2:duration=first:dropout_transition=0,volume=1.05[a]";
+  const silentAudioFilter = `[2:a]atrim=0:${durationText},asetpts=PTS-STARTPTS,aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo[clipa]`;
   const outputArgs = [
     "-map",
     "[v]",
@@ -696,10 +845,12 @@ async function renderHookSegment({ duration, inputPath, outputPath, startTime, t
       startTimeText,
       "-i",
       inputPath,
+      "-i",
+      sfxPath,
       "-t",
       durationText,
       "-filter_complex",
-      `[0:v]${filter}[v];[0:a]atrim=0:${durationText},asetpts=PTS-STARTPTS,apad=pad_dur=${durationText},atrim=0:${durationText},aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo[a]`,
+      `${filter};${sourceAudioFilter};${sfxAudioFilter};${mixedAudioFilter}`,
       ...outputArgs
     ]);
     return;
@@ -711,6 +862,8 @@ async function renderHookSegment({ duration, inputPath, outputPath, startTime, t
     startTimeText,
     "-i",
     inputPath,
+    "-i",
+    sfxPath,
     "-f",
     "lavfi",
     "-t",
@@ -720,7 +873,7 @@ async function renderHookSegment({ duration, inputPath, outputPath, startTime, t
     "-t",
     durationText,
     "-filter_complex",
-    `[0:v]${filter}[v];[1:a]atrim=0:${durationText},asetpts=PTS-STARTPTS,aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo[a]`,
+    `${filter};${silentAudioFilter};${sfxAudioFilter};${mixedAudioFilter}`,
     ...outputArgs
   ]);
 }
@@ -796,12 +949,22 @@ async function renderRankingVideo({ idea, selectedCandidates, workDir }) {
   const orderedEntries = [...entries].sort((a, b) => b.rank - a.rank);
   const segmentPaths = [];
   const hookEntry = await resolveHookEntry({ entries, idea, workDir });
+  const rankedPlans = new Map();
+  const teaser = hookTeaserLines(idea.title);
+  const sfxPath = join(workDir, "impact-sfx.wav");
   const hookPlan = await smartClipPlan(
     hookEntry.inputPath,
     hookEntry.sourceDuration,
     HOOK_DURATION_SECONDS
   );
   const hookOutputPath = join(workDir, "segment-hook.mp4");
+
+  await writeFile(sfxPath, impactSfxWavBuffer());
+
+  for (const entry of orderedEntries) {
+    const plan = await clipPlan(entry.inputPath, entry.sourceDuration, duration);
+    rankedPlans.set(entry.rank, plan);
+  }
 
   console.log(
     `Rendering opening hook from ${hookPlan.start.toFixed(2)}s for ${hookPlan.duration.toFixed(2)}s`
@@ -810,14 +973,21 @@ async function renderRankingVideo({ idea, selectedCandidates, workDir }) {
     duration: hookPlan.duration,
     inputPath: hookEntry.inputPath,
     outputPath: hookOutputPath,
+    sfxPath,
     startTime: hookPlan.start,
+    teaser,
     title: idea.title
   });
   segmentPaths.push(hookOutputPath);
 
   for (const [index, entry] of orderedEntries.entries()) {
     const outputPath = join(workDir, `segment-${index}.mp4`);
-    const plan = await clipPlan(entry.inputPath, entry.sourceDuration, duration);
+    const plan = rankedPlans.get(entry.rank);
+
+    if (!plan) {
+      throw new Error(`Missing render plan for #${entry.rank}.`);
+    }
+
     console.log(
       `Rendering #${entry.rank} from ${plan.start.toFixed(2)}s for ${plan.duration.toFixed(2)}s`
     );
@@ -827,6 +997,7 @@ async function renderRankingVideo({ idea, selectedCandidates, workDir }) {
       inputPath: entry.inputPath,
       orderedEntries,
       outputPath,
+      sfxPath,
       startTime: plan.start,
       title: idea.title
     });

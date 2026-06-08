@@ -93,11 +93,16 @@ type ClipPlan = {
   start: number;
 };
 
+type HookTeaserLines = {
+  primary: string;
+};
+
 const RANK_COUNT = 5;
 const OUTPUT_WIDTH = 1080;
 const OUTPUT_HEIGHT = 1920;
 const DEFAULT_DURATION_SECONDS = 15;
 const HOOK_DURATION_SECONDS = 5;
+const SFX_SAMPLE_RATE = 44100;
 const AUTO_RUN_INTERVAL_MS = 15 * 60 * 1000;
 const DEFAULT_DAILY_UPLOAD_TIMES = "5am, 7am, 9am, 11am";
 
@@ -505,6 +510,90 @@ function bestHookEntry(entries: RankingEntry[]) {
   return [...entries].sort((a, b) => a.rank - b.rank)[0] ?? entries[0];
 }
 
+function randomItem<T>(items: T[]) {
+  return items[Math.floor(Math.random() * items.length)];
+}
+
+function hookTeaserLines(value: string): HookTeaserLines {
+  const lower = value.toLowerCase();
+  const primary = [
+    "WAIT FOR #1",
+    "#1 IS UNREAL",
+    "THIS GETS WORSE",
+    "THE LAST ONE WINS",
+    "DO NOT MISS #1"
+  ];
+
+  if (lower.includes("stream") || lower.includes("twitch") || lower.includes("speed")) {
+    primary.push("CHAT WAS NOT READY", "THE STREAM WENT WILD");
+  }
+
+  if (lower.includes("fail") || lower.includes("crashout")) {
+    primary.push("INSTANT REGRET", "THIS WAS A VIOLATION");
+  }
+
+  return {
+    primary: randomItem(primary)
+  };
+}
+
+function createImpactSfxWavBytes() {
+  const durationSeconds = 0.48;
+  const channels = 2;
+  const bitsPerSample = 16;
+  const sampleCount = Math.floor(SFX_SAMPLE_RATE * durationSeconds);
+  const dataBytes = sampleCount * channels * (bitsPerSample / 8);
+  const buffer = new ArrayBuffer(44 + dataBytes);
+  const view = new DataView(buffer);
+  let offset = 0;
+
+  const writeString = (value: string) => {
+    for (let index = 0; index < value.length; index += 1) {
+      view.setUint8(offset, value.charCodeAt(index));
+      offset += 1;
+    }
+  };
+  const writeUint32 = (value: number) => {
+    view.setUint32(offset, value, true);
+    offset += 4;
+  };
+  const writeUint16 = (value: number) => {
+    view.setUint16(offset, value, true);
+    offset += 2;
+  };
+
+  writeString("RIFF");
+  writeUint32(36 + dataBytes);
+  writeString("WAVE");
+  writeString("fmt ");
+  writeUint32(16);
+  writeUint16(1);
+  writeUint16(channels);
+  writeUint32(SFX_SAMPLE_RATE);
+  writeUint32(SFX_SAMPLE_RATE * channels * (bitsPerSample / 8));
+  writeUint16(channels * (bitsPerSample / 8));
+  writeUint16(bitsPerSample);
+  writeString("data");
+  writeUint32(dataBytes);
+
+  for (let sampleIndex = 0; sampleIndex < sampleCount; sampleIndex += 1) {
+    const t = sampleIndex / SFX_SAMPLE_RATE;
+    const envelope = Math.exp(-t * 8.5);
+    const kick = Math.sin(2 * Math.PI * (132 * t - 56 * t * t)) * envelope;
+    const click = Math.sin(2 * Math.PI * 760 * t) * Math.exp(-t * 22);
+    const noise = (Math.random() * 2 - 1) * Math.exp(-t * 32);
+    const mixed = Math.max(-1, Math.min(1, (kick * 0.72 + click * 0.22 + noise * 0.12) * 0.58));
+    const pcm = Math.round(mixed * 32767);
+
+    for (let channel = 0; channel < channels; channel += 1) {
+      view.setInt16(offset, pcm, true);
+      offset += 2;
+    }
+  }
+
+  return new Uint8Array(buffer);
+}
+
 async function canvasToPngBytes(canvas: HTMLCanvasElement) {
   const blob = await new Promise<Blob>((resolve, reject) => {
     canvas.toBlob((result) => {
@@ -694,7 +783,45 @@ async function createOverlayPng(
   return canvasToPngBytes(canvas);
 }
 
-async function createHookOverlayPng(title: string) {
+async function createTransparentOverlayPng() {
+  const canvas = document.createElement("canvas");
+  canvas.width = OUTPUT_WIDTH;
+  canvas.height = OUTPUT_HEIGHT;
+
+  return canvasToPngBytes(canvas);
+}
+
+async function createRankRevealPng(rank: number) {
+  const canvas = document.createElement("canvas");
+  canvas.width = OUTPUT_WIDTH;
+  canvas.height = OUTPUT_HEIGHT;
+
+  const ctx = canvas.getContext("2d");
+
+  if (!ctx) {
+    throw new Error("Canvas rendering is unavailable in this browser.");
+  }
+
+  ctx.clearRect(0, 0, OUTPUT_WIDTH, OUTPUT_HEIGHT);
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.lineJoin = "round";
+  ctx.shadowColor = "rgba(0, 0, 0, 0.85)";
+  ctx.shadowBlur = 42;
+
+  // This transparent PNG is overlaid only for the first split second of each
+  // ranked clip, giving the rank a big pop-in reveal without hiding the video.
+  ctx.font = '900 330px "Arial Black", Impact, sans-serif';
+  ctx.lineWidth = 22;
+  ctx.strokeStyle = "rgba(0, 0, 0, 0.88)";
+  ctx.fillStyle = "#39ff88";
+  ctx.strokeText(`#${rank}`, OUTPUT_WIDTH / 2, 820);
+  ctx.fillText(`#${rank}`, OUTPUT_WIDTH / 2, 820);
+
+  return canvasToPngBytes(canvas);
+}
+
+async function createHookOverlayPng(title: string, teaser: HookTeaserLines) {
   const canvas = document.createElement("canvas");
   canvas.width = OUTPUT_WIDTH;
   canvas.height = OUTPUT_HEIGHT;
@@ -730,22 +857,30 @@ async function createHookOverlayPng(title: string) {
   });
 
   ctx.shadowBlur = 34;
-  ctx.font = '900 112px "Arial Black", Impact, sans-serif';
+  const teaserMaxWidth = 930;
+  let teaserFontSize = 112;
+
+  ctx.font = `900 ${teaserFontSize}px "Arial Black", Impact, sans-serif`;
+
+  while (ctx.measureText(teaser.primary).width > teaserMaxWidth && teaserFontSize > 68) {
+    teaserFontSize -= 4;
+    ctx.font = `900 ${teaserFontSize}px "Arial Black", Impact, sans-serif`;
+  }
+
+  const teaserLines =
+    ctx.measureText(teaser.primary).width <= teaserMaxWidth
+      ? [teaser.primary]
+      : wrapTextFully(ctx, teaser.primary, teaserMaxWidth);
+  const teaserLineHeight = Math.round(teaserFontSize * 1.08);
+  const teaserTop = Math.round(1190 - ((teaserLines.length - 1) * teaserLineHeight) / 2);
+
   ctx.lineWidth = 10;
   ctx.fillStyle = "#39ff88";
-  ctx.strokeText("WAIT FOR #1", OUTPUT_WIDTH / 2, 1190);
-  ctx.fillText("WAIT FOR #1", OUTPUT_WIDTH / 2, 1190);
-
-  ctx.font = '900 66px "Arial", sans-serif';
-  ctx.lineWidth = 8;
-  ctx.fillStyle = "#ffffff";
-  ctx.strokeText("TOP 5 STARTS NOW", OUTPUT_WIDTH / 2, 1330);
-  ctx.fillText("TOP 5 STARTS NOW", OUTPUT_WIDTH / 2, 1330);
-
-  ctx.font = '900 48px "Arial", sans-serif';
-  ctx.fillStyle = "#ffe66d";
-  ctx.strokeText("DO NOT BLINK", OUTPUT_WIDTH / 2, 1426);
-  ctx.fillText("DO NOT BLINK", OUTPUT_WIDTH / 2, 1426);
+  teaserLines.forEach((line, index) => {
+    const y = teaserTop + index * teaserLineHeight;
+    ctx.strokeText(line, OUTPUT_WIDTH / 2, y);
+    ctx.fillText(line, OUTPUT_WIDTH / 2, y);
+  });
 
   return canvasToPngBytes(canvas);
 }
@@ -796,7 +931,9 @@ async function renderSegment({
   ffmpeg,
   inputName,
   overlayName,
+  revealName,
   segmentName,
+  sfxName,
   startTimeText,
   durationText,
   fadeDuration,
@@ -805,15 +942,23 @@ async function renderSegment({
   ffmpeg: FFmpeg;
   inputName: string;
   overlayName: string;
+  revealName: string;
   segmentName: string;
+  sfxName: string;
   startTimeText: string;
   durationText: string;
   fadeDuration: number;
   fadeOutStart: string;
 }) {
-  const videoFilter = `[0:v]scale=${OUTPUT_WIDTH}:${OUTPUT_HEIGHT}:force_original_aspect_ratio=increase,crop=${OUTPUT_WIDTH}:${OUTPUT_HEIGHT},setsar=1,format=rgba[base];[base][1:v]overlay=0:0:format=auto,format=yuv420p,fade=t=in:st=0:d=${fadeDuration},fade=t=out:st=${fadeOutStart}:d=${fadeDuration}[v]`;
-  const audioFilter = `[0:a]atrim=0:${durationText},asetpts=PTS-STARTPTS,apad=pad_dur=${durationText},atrim=0:${durationText},aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo[a]`;
-  const silentAudioFilter = `[2:a]atrim=0:${durationText},asetpts=PTS-STARTPTS,aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo[a]`;
+  const safeClipDuration = Number.parseFloat(durationText);
+  const progressDuration = (Number.isFinite(safeClipDuration) ? Math.max(0.1, safeClipDuration) : 0.1).toFixed(2);
+  const progressOverlayX = `max(-w\\,min(0\\,-w+w*t/${progressDuration}))`;
+  const progressY = OUTPUT_HEIGHT - 22;
+  const videoFilter = `color=c=0x39ff88@0.95:s=${OUTPUT_WIDTH}x18:r=30:d=${durationText},format=rgba[progressBar];[0:v]setpts=PTS-STARTPTS,scale=${OUTPUT_WIDTH}:${OUTPUT_HEIGHT}:force_original_aspect_ratio=increase,crop=${OUTPUT_WIDTH}:${OUTPUT_HEIGHT},setsar=1,format=rgba[base];[base][1:v]overlay=0:0:format=auto[withOverlay];[2:v]format=rgba,fade=t=out:st=0.48:d=0.32:alpha=1[rankReveal];[withOverlay][rankReveal]overlay=0:0:format=auto:enable='between(t\\,0\\,0.80)',format=yuv420p,drawbox=x=0:y=${progressY}:w=iw:h=18:color=white@0.18:t=fill[progressBase];[progressBase][progressBar]overlay=x='${progressOverlayX}':y=${progressY}:format=auto,format=yuv420p,fade=t=in:st=0:d=${fadeDuration},fade=t=out:st=${fadeOutStart}:d=${fadeDuration}[v]`;
+  const sourceAudioFilter = `[0:a]atrim=0:${durationText},asetpts=PTS-STARTPTS,apad=pad_dur=${durationText},atrim=0:${durationText},aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo[clipa]`;
+  const sfxAudioFilter = `[3:a]atrim=0:${durationText},asetpts=PTS-STARTPTS,apad=pad_dur=${durationText},atrim=0:${durationText},volume=0.52,aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo[sfx]`;
+  const mixedAudioFilter = "[clipa][sfx]amix=inputs=2:duration=first:dropout_transition=0,volume=1.05[a]";
+  const silentAudioFilter = `[4:a]atrim=0:${durationText},asetpts=PTS-STARTPTS,aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo[clipa]`;
   const outputSettings = [
     "-map",
     "[v]",
@@ -853,10 +998,16 @@ async function renderSegment({
       "1",
       "-i",
       overlayName,
+      "-loop",
+      "1",
+      "-i",
+      revealName,
+      "-i",
+      sfxName,
       "-t",
       durationText,
       "-filter_complex",
-      `${videoFilter};${audioFilter}`,
+      `${videoFilter};${sourceAudioFilter};${sfxAudioFilter};${mixedAudioFilter}`,
       ...outputSettings
     ]);
   } catch {
@@ -872,6 +1023,12 @@ async function renderSegment({
       "1",
       "-i",
       overlayName,
+      "-loop",
+      "1",
+      "-i",
+      revealName,
+      "-i",
+      sfxName,
       "-f",
       "lavfi",
       "-t",
@@ -881,7 +1038,7 @@ async function renderSegment({
       "-t",
       durationText,
       "-filter_complex",
-      `${videoFilter};${silentAudioFilter}`,
+      `${videoFilter};${silentAudioFilter};${sfxAudioFilter};${mixedAudioFilter}`,
       ...outputSettings
     ]);
   }
@@ -1521,6 +1678,10 @@ export default function Home() {
       const segmentNames: string[] = [];
       const orderedResolvedEntries = [...resolvedEntries].sort((a, b) => b.rank - a.rank);
       const hookEntry = bestHookEntry(resolvedEntries);
+      const rankedClipPlans = new Map<number, ClipPlan>();
+      const teaser = hookTeaserLines(activeTitle);
+      const sfxName = "impact-sfx.wav";
+      const blankRevealName = "rank-reveal-blank.png";
 
       if (!hookEntry?.file) {
         throw new Error("Missing hook clip source.");
@@ -1534,13 +1695,26 @@ export default function Home() {
       setProgress(20);
 
       const hookPlan = await browserClipPlan(hookEntry, HOOK_DURATION_SECONDS, true);
+
+      for (const [index, entry] of orderedResolvedEntries.entries()) {
+        setStatusText(
+          smartHighlights ? `Finding highlight for #${entry.rank}...` : `Preparing #${entry.rank}...`
+        );
+        setProgress(22 + Math.round((index / RANK_COUNT) * 16));
+
+        const clipPlan = await browserClipPlan(entry, duration, smartHighlights);
+        rankedClipPlans.set(entry.rank, clipPlan);
+      }
+
       const hookDurationText = hookPlan.duration.toFixed(2);
       const hookStartTimeText = hookPlan.start.toFixed(2);
       const hookFadeDuration = Math.min(0.25, hookPlan.duration / 4);
       const hookFadeOutStart = Math.max(hookPlan.duration - hookFadeDuration, 0).toFixed(2);
 
+      await ffmpeg.writeFile(sfxName, createImpactSfxWavBytes());
+      await ffmpeg.writeFile(blankRevealName, await createTransparentOverlayPng());
       await ffmpeg.writeFile(hookInputName, await fetchFile(hookEntry.file));
-      await ffmpeg.writeFile(hookOverlayName, await createHookOverlayPng(activeTitle));
+      await ffmpeg.writeFile(hookOverlayName, await createHookOverlayPng(activeTitle, teaser));
 
       setStatusText("Rendering opening hook...");
 
@@ -1548,7 +1722,9 @@ export default function Home() {
         ffmpeg,
         inputName: hookInputName,
         overlayName: hookOverlayName,
+        revealName: blankRevealName,
         segmentName: hookSegmentName,
+        sfxName,
         startTimeText: hookStartTimeText,
         durationText: hookDurationText,
         fadeDuration: hookFadeDuration,
@@ -1564,14 +1740,18 @@ export default function Home() {
 
         const inputName = `input-${entry.rank}.${fileExtension(entry.file)}`;
         const overlayName = `overlay-${entry.rank}.png`;
+        const revealName = `rank-reveal-${entry.rank}.png`;
         const segmentName = `segment-${index}.mp4`;
 
-        setStatusText(
-          smartHighlights ? `Finding highlight for #${entry.rank}...` : `Preparing #${entry.rank}...`
-        );
-        setProgress(26 + Math.round((index / RANK_COUNT) * 64));
+        setStatusText(`Rendering #${entry.rank}...`);
+        setProgress(38 + Math.round((index / RANK_COUNT) * 52));
 
-        const clipPlan = await browserClipPlan(entry, duration, smartHighlights);
+        const clipPlan = rankedClipPlans.get(entry.rank);
+
+        if (!clipPlan) {
+          throw new Error(`Missing render plan for #${entry.rank}.`);
+        }
+
         const durationText = clipPlan.duration.toFixed(2);
         const startTimeText = clipPlan.start.toFixed(2);
         const fadeDuration = Math.min(0.25, clipPlan.duration / 4);
@@ -1582,16 +1762,18 @@ export default function Home() {
           overlayName,
           await createOverlayPng(activeTitle, entry, orderedResolvedEntries)
         );
-
-        setStatusText(`Rendering #${entry.rank}...`);
+        await ffmpeg.writeFile(revealName, await createRankRevealPng(entry.rank));
 
         // FFmpeg trims each clip, scales/crops it into a 1080x1920 canvas, adds
-        // transition fades, overlays the rank/title/list PNG, and keeps audio.
+        // transition fades, overlays the rank/list PNGs, adds progress/SFX, and
+        // keeps normalized source audio.
         await renderSegment({
           ffmpeg,
           inputName,
           overlayName,
+          revealName,
           segmentName,
+          sfxName,
           startTimeText,
           durationText,
           fadeDuration,

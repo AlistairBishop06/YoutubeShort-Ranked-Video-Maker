@@ -11,6 +11,10 @@ The app lets you:
 - Generate a vertical Shorts/Reels/TikTok-style MP4 with FFmpeg.
 - Start each video with a 5-second high-energy hook before the #5 clip.
 - Keep the main title, current rank, clip label, and ranking list on screen.
+- Add a thin animated progress bar that resets for each clip.
+- Randomize the main hook teaser text so videos do not all open the same way.
+- Add generated impact sound effects on the hook and rank reveals.
+- Pop in a large temporary rank reveal at the start of each ranked clip.
 - Preserve audio from the source clips.
 - Generate a copy-paste viral description with emojis and hashtags.
 - Optionally auto-upload the finished MP4 to YouTube.
@@ -71,6 +75,13 @@ In this mode:
 4. TikToks that look like someone else's ranking, compilation, or repost are filtered out before selection.
 
 The opening hook always uses a smart 5-second highlight window so the first few seconds are more likely to grab attention. In browser/manual generation, the hook teases the #1 source clip without showing its rank. In GitHub Actions scheduled generation, the worker tries to use an extra non-ranking TikTok candidate for the hook first, then falls back to the #1 source clip if no extra candidate downloads successfully.
+
+Each generated video also adds:
+
+1. A per-clip progress bar so each segment feels quick to finish.
+2. One randomized hook teaser like `#1 IS UNREAL`, `THIS GETS WORSE`, or `CHAT WAS NOT READY`.
+3. Generated impact sound effects mixed into the source audio.
+4. A large rank reveal flash at the start of each ranked clip.
 
 The candidate finder rejects titles that contain patterns like:
 
