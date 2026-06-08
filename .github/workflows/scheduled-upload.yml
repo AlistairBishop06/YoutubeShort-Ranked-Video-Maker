@@ -29,6 +29,7 @@ jobs:
       FORCE_UPLOAD: ${{ github.event_name == 'workflow_dispatch' && inputs.force && 'true' || 'false' }}
       GITHUB_TOKEN: ${{ github.token }}
       LAST_UPLOAD_SLOT: ${{ vars.LAST_UPLOAD_SLOT }}
+      RECENT_TIKTOK_IDS: ${{ vars.RECENT_TIKTOK_IDS }}
       UPLOAD_SCHEDULE_ENABLED: ${{ vars.UPLOAD_SCHEDULE_ENABLED || 'false' }}
       UPLOAD_SCHEDULE_TIMES: ${{ vars.UPLOAD_SCHEDULE_TIMES || '05:00,07:00,09:00,11:00' }}
       UPLOAD_SCHEDULE_TIMEZONE: ${{ vars.UPLOAD_SCHEDULE_TIMEZONE || 'UTC' }}

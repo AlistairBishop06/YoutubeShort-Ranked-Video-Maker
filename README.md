@@ -422,6 +422,14 @@ That prevents duplicate uploads if GitHub Actions runs more than once inside the
 
 You do not need to create `LAST_UPLOAD_SLOT` manually. If you do create it, leave it blank. The workflow fills it after the first successful scheduled upload.
 
+The workflow also auto-manages this variable:
+
+```text
+RECENT_TIKTOK_IDS=...
+```
+
+You do not need to create `RECENT_TIKTOK_IDS` manually. It stores recently uploaded TikTok video IDs so future scheduled runs can avoid generating the exact same video when a topic comes up again.
+
 ### Step 10: Test The Workflow Manually
 
 Do this before trusting the schedule.

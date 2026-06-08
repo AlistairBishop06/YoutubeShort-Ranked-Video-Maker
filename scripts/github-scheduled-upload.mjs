@@ -237,12 +237,20 @@ async function findViralIdea() {
     /\/$/,
     ""
   );
+  const excludeIds = String(process.env.RECENT_TIKTOK_IDS || "")
+    .split(",")
+    .map((id) => id.trim())
+    .filter(Boolean);
 
   if (!appBaseUrl) {
     throw new Error("APP_BASE_URL is required so GitHub Actions can call /api/ideas/find.");
   }
 
-  const response = await fetch(`${appBaseUrl}/api/ideas/find`, { method: "POST" });
+  const response = await fetch(`${appBaseUrl}/api/ideas/find`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ excludeIds })
+  });
   const payload = await response.json();
 
   if (!response.ok || !payload.title || !Array.isArray(payload.candidates)) {
@@ -468,6 +476,7 @@ async function renderRankingVideo({ idea, selectedCandidates, workDir }) {
       const inputPath = await downloadTikTokClip(candidate, workDir, rank);
       entries.push({
         rank,
+        id: candidate.id,
         name: cleanText(candidate.name, `Rank ${rank}`),
         url: candidate.url,
         inputPath
@@ -601,6 +610,19 @@ async function upsertRepoVariable(name, value) {
   }
 }
 
+async function rememberUploadedTikToks(selectedCandidates) {
+  const previousIds = String(process.env.RECENT_TIKTOK_IDS || "")
+    .split(",")
+    .map((id) => id.trim())
+    .filter(Boolean);
+  const nextIds = selectedCandidates
+    .map((candidate) => candidate.id)
+    .filter(Boolean);
+  const uniqueIds = [...new Set([...nextIds, ...previousIds])].slice(0, 120);
+
+  await upsertRepoVariable("RECENT_TIKTOK_IDS", uniqueIds.join(","));
+}
+
 async function main() {
   const force = process.env.FORCE_UPLOAD === "true";
   const scheduleTimes = parseScheduleInput(process.env.UPLOAD_SCHEDULE_TIMES);
@@ -625,7 +647,7 @@ async function main() {
   try {
     const idea = await findViralIdea();
     const selectedCandidates = idea.candidates.slice(0, 12);
-    const { outputPath } = await renderRankingVideo({
+    const { outputPath, selectedCandidates: uploadedCandidates } = await renderRankingVideo({
       idea: { ...idea, candidates: selectedCandidates },
       selectedCandidates,
       workDir
@@ -643,6 +665,8 @@ async function main() {
     if (!force && slot.slotId) {
       await upsertRepoVariable("LAST_UPLOAD_SLOT", slot.slotId);
     }
+
+    await rememberUploadedTikToks(uploadedCandidates);
   } finally {
     await rm(workDir, { recursive: true, force: true });
   }

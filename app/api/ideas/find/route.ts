@@ -1,4 +1,4 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -39,25 +39,88 @@ type Candidate = {
 
 const FALLBACK_IDEAS = [
   "sidemen funny moments",
+  "sidemen irl moments",
+  "sidemen challenge fails",
+  "sidemen awkward moments",
+  "sidemen football moments",
+  "sidemen roast moments",
   "speed funny moments",
+  "speed irl moments",
+  "speed stream fails",
+  "speed fan interactions",
+  "speed rage moments",
+  "speed awkward moments",
+  "speed football moments",
+  "speed chat moments",
   "kai cenat funny moments",
+  "kai cenat stream fails",
+  "kai cenat room moments",
+  "kai cenat fan interactions",
+  "kai cenat rage moments",
   "ishowspeed funny moments",
+  "ishowspeed stream fails",
+  "ishowspeed fan interactions",
+  "ishowspeed irl moments",
+  "ishowspeed rage moments",
   "mrbeast funny moments",
+  "mrbeast challenge moments",
+  "mrbeast awkward moments",
+  "mrbeast contestant moments",
   "ksi funny moments",
+  "ksi try not to laugh",
+  "ksi roast moments",
+  "ksi rage moments",
+  "ksi sidemen moments",
   "logan paul funny moments",
+  "logan paul podcast moments",
+  "logan paul awkward moments",
   "danny aarons funny moments",
+  "danny aarons rage moments",
+  "danny aarons football moments",
   "adin ross funny moments",
+  "adin ross stream fails",
+  "adin ross fan interactions",
+  "adin ross awkward moments",
+  "adin ross rage moments",
   "caseoh funny moments",
+  "caseoh crashout moments",
+  "caseoh rage moments",
+  "caseoh chat moments",
+  "caseoh stream fails",
   "fanum funny moments",
+  "fanum tax moments",
+  "fanum stream moments",
   "beta squad funny moments",
+  "beta squad public moments",
+  "beta squad challenge fails",
+  "beta squad roast moments",
   "amp funny moments",
+  "amp stream fails",
+  "amp irl moments",
+  "amp challenge moments",
   "nelk boys funny moments",
+  "nelk boys prank fails",
+  "nelk boys public moments",
   "filly funny moments",
+  "filly public moments",
+  "filly roast moments",
   "chunkz funny moments",
+  "chunkz public moments",
+  "chunkz football moments",
   "jidion funny moments",
+  "jidion prank fails",
+  "jidion public moments",
   "xqc funny moments",
+  "xqc rage moments",
+  "xqc stream fails",
+  "xqc chat moments",
   "streamer funny moments",
+  "streamer rage moments",
+  "streamer awkward moments",
+  "streamer fan interactions",
   "youtuber funny moments",
+  "youtuber irl moments",
+  "youtuber challenge fails",
   "youtube funny moments",
   "twitch funny moments",
   "creator funny moments",
@@ -75,12 +138,73 @@ const FALLBACK_IDEAS = [
   "unexpected moments"
 ];
 
-const RECENT_TOPIC_LIMIT = 8;
+const CREATOR_NAMES = [
+  "speed",
+  "ishowspeed",
+  "sidemen",
+  "ksi",
+  "kai cenat",
+  "caseoh",
+  "adin ross",
+  "xqc",
+  "amp",
+  "beta squad",
+  "mrbeast",
+  "logan paul",
+  "danny aarons",
+  "fanum",
+  "chunkz",
+  "jidion",
+  "nelk boys",
+  "filly"
+];
+
+const CREATOR_VARIANTS = [
+  "funny moments",
+  "irl moments",
+  "stream fails",
+  "rage moments",
+  "fan interactions",
+  "awkward moments",
+  "roast moments",
+  "challenge fails",
+  "chat moments",
+  "unexpected moments",
+  "caught lacking",
+  "crashout moments",
+  "public moments",
+  "reaction moments",
+  "best clips",
+  "live moments"
+];
+
+const GENERAL_VARIANT_TOPICS = [
+  "streamer rage moments",
+  "streamer fan interactions",
+  "streamer awkward moments",
+  "streamer gets roasted",
+  "youtuber challenge fails",
+  "youtuber irl moments",
+  "youtube creator awkward moments",
+  "twitch chat funny moments",
+  "live stream gone wrong",
+  "public interview funny moments",
+  "football creator funny moments",
+  "gaming rage moments",
+  "creator collab funny moments",
+  "prank gone wrong",
+  "try not to laugh streamer",
+  "viral creator crashout"
+];
+
+const RECENT_TOPIC_LIMIT = 18;
+const RECENT_CANDIDATE_LIMIT = 120;
 const SEARCH_BATCH_SIZE = 6;
-const MAX_SEARCH_ATTEMPTS = 30;
-const CREATOR_IDEA_COUNT = 23;
+const MAX_SEARCH_ATTEMPTS = 42;
+const SEARCH_CANDIDATE_COUNT = 30;
 const recentTopics = globalThis as typeof globalThis & {
   __ytshortRecentIdeaTopics?: Array<{ topic: string; key: string }>;
+  __ytshortRecentCandidateIds?: string[];
 };
 
 const IMPORTANT_WORD_STOPWORDS = new Set([
@@ -423,13 +547,19 @@ async function fetchTrendingTerms() {
 }
 
 function buildSearchIdeas(trendingTerms: string[]) {
+  const creatorIdeas = CREATOR_NAMES.flatMap((creator) =>
+    shuffle(CREATOR_VARIANTS).slice(0, 10).map((variant) => `${creator} ${variant}`)
+  );
   const trendIdeas = trendingTerms.flatMap((term) => [
     `${term} moments`,
     `${term} funny moments`,
-    `${term} reaction`
+    `${term} reaction`,
+    `${term} awkward moments`,
+    `${term} fails`,
+    `${term} fan reaction`
   ]);
 
-  return [...new Set([...FALLBACK_IDEAS, ...trendIdeas])].slice(0, 44);
+  return [...new Set([...creatorIdeas, ...FALLBACK_IDEAS, ...GENERAL_VARIANT_TOPICS, ...trendIdeas])];
 }
 
 function shuffle<T>(items: T[]) {
@@ -448,6 +578,11 @@ function getRecentTopics() {
   return recentTopics.__ytshortRecentIdeaTopics;
 }
 
+function getRecentCandidateIds() {
+  recentTopics.__ytshortRecentCandidateIds ??= [];
+  return recentTopics.__ytshortRecentCandidateIds;
+}
+
 function rememberTopic(topic: string) {
   const key = topicKey(topic);
   const recent = getRecentTopics().filter((recentTopic) => recentTopic.key !== key);
@@ -455,11 +590,17 @@ function rememberTopic(topic: string) {
   recentTopics.__ytshortRecentIdeaTopics = recent.slice(0, RECENT_TOPIC_LIMIT);
 }
 
-async function searchTikWMCandidates(query: string) {
+function rememberCandidateIds(ids: string[]) {
+  const recent = getRecentCandidateIds().filter((id) => !ids.includes(id));
+  recent.unshift(...ids);
+  recentTopics.__ytshortRecentCandidateIds = recent.slice(0, RECENT_CANDIDATE_LIMIT);
+}
+
+async function searchTikWMCandidates(query: string, cursor = 0) {
   const url = new URL("https://www.tikwm.com/api/feed/search");
   url.searchParams.set("keywords", query);
-  url.searchParams.set("count", "18");
-  url.searchParams.set("cursor", "0");
+  url.searchParams.set("count", String(SEARCH_CANDIDATE_COUNT));
+  url.searchParams.set("cursor", String(cursor));
 
   const response = await fetch(url, {
     headers: { "User-Agent": "Mozilla/5.0", Accept: "application/json" }
@@ -512,6 +653,27 @@ async function searchTikWMCandidates(query: string) {
   return deDuplicateLabels(candidates);
 }
 
+async function searchVariedCandidates(query: string) {
+  const relatedQuery = shuffle([
+    `${query} clips`,
+    `${query} tiktok`,
+    `${query} viral`,
+    `${query} best moments`
+  ])[0];
+  const cursor = shuffle([0, 12, 24])[0];
+  const results = await Promise.allSettled(
+    [
+      searchTikWMCandidates(query, 0),
+      cursor === 0 ? Promise.resolve([]) : searchTikWMCandidates(query, cursor),
+      searchTikWMCandidates(relatedQuery, 0)
+    ]
+  );
+
+  return uniqueCandidates(
+    results.flatMap((result) => (result.status === "fulfilled" ? result.value : []))
+  );
+}
+
 function uniqueCandidates(candidates: Candidate[]) {
   const seen = new Set<string>();
   const unique: Candidate[] = [];
@@ -526,6 +688,61 @@ function uniqueCandidates(candidates: Candidate[]) {
   }
 
   return unique;
+}
+
+function weightedSample(candidates: Candidate[], count: number) {
+  const remaining = [...candidates];
+  const selected: Candidate[] = [];
+  const usedCreators = new Set<string>();
+
+  while (remaining.length && selected.length < count) {
+    const creatorDiversePool = remaining.filter((candidate) => !usedCreators.has(candidate.creator));
+    const pool =
+      creatorDiversePool.length >= count - selected.length ? creatorDiversePool : remaining;
+    const weights = pool.map((candidate) => Math.max(1, Math.log10(candidate.score + 10)));
+    const totalWeight = weights.reduce((total, weight) => total + weight, 0);
+    let cursor = Math.random() * totalWeight;
+    let pickedIndex = 0;
+
+    for (let index = 0; index < pool.length; index += 1) {
+      cursor -= weights[index];
+
+      if (cursor <= 0) {
+        pickedIndex = index;
+        break;
+      }
+    }
+
+    const picked = pool[pickedIndex];
+    selected.push(picked);
+    usedCreators.add(picked.creator);
+
+    const removeIndex = remaining.findIndex((candidate) => candidate.id === picked.id);
+
+    if (removeIndex >= 0) {
+      remaining.splice(removeIndex, 1);
+    }
+  }
+
+  return selected;
+}
+
+function rotateCandidates(candidates: Candidate[], excludedIds: Set<string>) {
+  const scoreSorted = [...candidates].sort((a, b) => b.score - a.score);
+  const freshCandidates = scoreSorted.filter((candidate) => !excludedIds.has(candidate.id));
+  const primaryPool = (freshCandidates.length >= 5 ? freshCandidates : scoreSorted).slice(0, 24);
+  const selected = weightedSample(primaryPool, 5).sort((a, b) => b.score - a.score);
+  const selectedIds = new Set(selected.map((candidate) => candidate.id));
+  const filler = scoreSorted
+    .filter((candidate) => !selectedIds.has(candidate.id))
+    .map((candidate) => ({
+      candidate,
+      sortScore: candidate.score * (0.85 + Math.random() * 0.3)
+    }))
+    .sort((a, b) => b.sortScore - a.sortScore)
+    .map(({ candidate }) => candidate);
+
+  return [...selected, ...filler];
 }
 
 function buildHashtags(topic: string, candidates: Candidate[]) {
@@ -605,15 +822,16 @@ function generatedTitle(topic: string) {
   return `Top 5 ${titled} Funny Moments`;
 }
 
-export async function POST() {
+export async function POST(request: NextRequest) {
+  const body = (await request.json().catch(() => ({}))) as { excludeIds?: string[] };
+  const excludedIds = new Set([
+    ...getRecentCandidateIds(),
+    ...(Array.isArray(body.excludeIds) ? body.excludeIds : [])
+  ]);
   const trendingTerms = await fetchTrendingTerms();
   const recent = getRecentTopics();
   const recentKeys = new Set(recent.map((recentTopic) => recentTopic.key));
-  const allIdeas = buildSearchIdeas(trendingTerms);
-  const ideas = [
-    ...shuffle(allIdeas.slice(0, CREATOR_IDEA_COUNT)),
-    ...shuffle(allIdeas.slice(CREATOR_IDEA_COUNT))
-  ];
+  const ideas = shuffle(buildSearchIdeas(trendingTerms));
   const nonRecentIdeas = ideas.filter((idea) => !recentKeys.has(topicKey(idea)));
   const recentIdeas = ideas.filter((idea) => recentKeys.has(topicKey(idea)));
   const orderedIdeas = [...nonRecentIdeas, ...recentIdeas].slice(0, MAX_SEARCH_ATTEMPTS);
@@ -629,9 +847,7 @@ export async function POST() {
     const batchResults = await Promise.allSettled(
       batch.map(async (idea) => ({
         idea,
-        candidates: uniqueCandidates(await searchTikWMCandidates(idea)).sort(
-          (a, b) => b.score - a.score
-        )
+        candidates: rotateCandidates(await searchVariedCandidates(idea), excludedIds)
       }))
     );
 
@@ -664,6 +880,7 @@ export async function POST() {
 
   if (selectedIdea) {
     rememberTopic(selectedIdea.idea);
+    rememberCandidateIds(selectedIdea.candidates.slice(0, 5).map((candidate) => candidate.id));
     const title = generatedTitle(selectedIdea.idea);
     const { description, hashtags } = buildDescription(
       title,
