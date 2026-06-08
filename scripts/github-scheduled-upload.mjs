@@ -167,6 +167,55 @@ function truncate(value, maxLength) {
   return `${text.slice(0, maxLength - 3).trim()}...`;
 }
 
+function wrapTextByCharacters(value, maxLength) {
+  const words = cleanText(value).split(/\s+/).filter(Boolean);
+  const lines = [];
+  let currentLine = "";
+
+  for (const word of words) {
+    const testLine = currentLine ? `${currentLine} ${word}` : word;
+
+    if (testLine.length <= maxLength) {
+      currentLine = testLine;
+      continue;
+    }
+
+    if (currentLine) {
+      lines.push(currentLine);
+      currentLine = "";
+    }
+
+    if (word.length <= maxLength) {
+      currentLine = word;
+      continue;
+    }
+
+    for (let index = 0; index < word.length; index += maxLength) {
+      lines.push(word.slice(index, index + maxLength));
+    }
+  }
+
+  if (currentLine) {
+    lines.push(currentLine);
+  }
+
+  return lines.length ? lines : [cleanText(value)];
+}
+
+function titleTextLayout(title) {
+  const lines = wrapTextByCharacters(title, 25);
+
+  if (lines.length <= 2) {
+    return { lines, size: 62, lineHeight: 72 };
+  }
+
+  if (lines.length === 3) {
+    return { lines, size: 54, lineHeight: 64 };
+  }
+
+  return { lines, size: 46, lineHeight: 56 };
+}
+
 function emojiPackForTitle(value) {
   const lower = value.toLowerCase();
 
@@ -394,19 +443,26 @@ function drawText({ text, x, y, size, color = "white", border = 4 }) {
 }
 
 function videoFilters({ activeEntry, orderedEntries, title, duration, fadeDuration, fadeOutStart }) {
+  const titleLayout = titleTextLayout(title);
   const filters = [
     `scale=${OUTPUT_WIDTH}:${OUTPUT_HEIGHT}:force_original_aspect_ratio=increase`,
     `crop=${OUTPUT_WIDTH}:${OUTPUT_HEIGHT}`,
     "setsar=1",
-    "format=yuv420p",
-    drawText({
-      text: truncate(title, 40),
+    "format=yuv420p"
+  ];
+
+  titleLayout.lines.forEach((line, index) => {
+    filters.push(drawText({
+      text: line,
       x: "(w-text_w)/2",
-      y: 140,
-      size: 62,
+      y: 140 + index * titleLayout.lineHeight,
+      size: titleLayout.size,
       color: "white",
       border: 5
-    }),
+    }));
+  });
+
+  filters.push(
     drawText({
       text: `#${activeEntry.rank}`,
       x: 70,
@@ -423,7 +479,7 @@ function videoFilters({ activeEntry, orderedEntries, title, duration, fadeDurati
       color: "white",
       border: 4
     })
-  ];
+  );
 
   orderedEntries.forEach((entry, index) => {
     const y = 1575 + index * 60;

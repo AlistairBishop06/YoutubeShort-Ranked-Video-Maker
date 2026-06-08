@@ -435,6 +435,68 @@ function wrapText(
   return lines;
 }
 
+function wrapTextFully(ctx: CanvasRenderingContext2D, text: string, maxWidth: number) {
+  const words = text.trim().split(/\s+/).filter(Boolean);
+  const lines: string[] = [];
+  let currentLine = "";
+
+  for (const word of words) {
+    const testLine = currentLine ? `${currentLine} ${word}` : word;
+
+    if (ctx.measureText(testLine).width <= maxWidth) {
+      currentLine = testLine;
+      continue;
+    }
+
+    if (currentLine) {
+      lines.push(currentLine);
+      currentLine = "";
+    }
+
+    if (ctx.measureText(word).width <= maxWidth) {
+      currentLine = word;
+      continue;
+    }
+
+    let wordChunk = "";
+
+    for (const char of word) {
+      const testChunk = `${wordChunk}${char}`;
+
+      if (ctx.measureText(testChunk).width <= maxWidth) {
+        wordChunk = testChunk;
+        continue;
+      }
+
+      if (wordChunk) {
+        lines.push(wordChunk);
+      }
+
+      wordChunk = char;
+    }
+
+    currentLine = wordChunk;
+  }
+
+  if (currentLine) {
+    lines.push(currentLine);
+  }
+
+  return lines.length ? lines : [text];
+}
+
+function titleFontForLineCount(lineCount: number) {
+  if (lineCount <= 2) {
+    return { size: 68, lineHeight: 78 };
+  }
+
+  if (lineCount === 3) {
+    return { size: 58, lineHeight: 68 };
+  }
+
+  return { size: 48, lineHeight: 58 };
+}
+
 async function canvasToPngBytes(canvas: HTMLCanvasElement) {
   const blob = await new Promise<Blob>((resolve, reject) => {
     canvas.toBlob((result) => {
@@ -568,10 +630,12 @@ async function createOverlayPng(
   ctx.shadowBlur = 22;
   ctx.font = '800 68px "Arial", sans-serif';
 
-  const titleLines = wrapText(ctx, title, 910, 2);
   const titleSafeY = 140;
+  const titleLines = wrapTextFully(ctx, title, 910);
+  const titleFont = titleFontForLineCount(titleLines.length);
+  ctx.font = `800 ${titleFont.size}px "Arial", sans-serif`;
   titleLines.forEach((line, index) => {
-    ctx.fillText(line, OUTPUT_WIDTH / 2, titleSafeY + index * 78);
+    ctx.fillText(line, OUTPUT_WIDTH / 2, titleSafeY + index * titleFont.lineHeight);
   });
 
   ctx.textAlign = "left";
