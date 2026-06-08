@@ -581,8 +581,9 @@ async function createOverlayPng(
   ctx.font = '800 68px "Arial", sans-serif';
 
   const titleLines = wrapText(ctx, title, 910, 2);
+  const titleSafeY = 140;
   titleLines.forEach((line, index) => {
-    ctx.fillText(line, OUTPUT_WIDTH / 2, 58 + index * 78);
+    ctx.fillText(line, OUTPUT_WIDTH / 2, titleSafeY + index * 78);
   });
 
   ctx.textAlign = "left";

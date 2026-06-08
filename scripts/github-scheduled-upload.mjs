@@ -404,7 +404,7 @@ function videoFilters({ activeEntry, orderedEntries, title, duration, fadeDurati
     drawText({
       text: truncate(title, 40),
       x: "(w-text_w)/2",
-      y: 64,
+      y: 140,
       size: 62,
       color: "white",
       border: 5
