@@ -9,6 +9,7 @@ The app lets you:
 - Auto-fill 5 ranked clips.
 - Download TikTok clips temporarily with `yt-dlp`.
 - Generate a vertical Shorts/Reels/TikTok-style MP4 with FFmpeg.
+- Start each video with a 5-second high-energy hook before the #5 clip.
 - Keep the main title, current rank, clip label, and ranking list on screen.
 - Preserve audio from the source clips.
 - Generate a copy-paste viral description with emojis and hashtags.
@@ -52,8 +53,9 @@ http://127.0.0.1:3000
 4. Check the generated title and clip names.
 5. Copy the generated description if needed.
 6. Click `Generate Video`.
-7. Preview the MP4.
-8. Download the finished video.
+7. The app renders a 5-second hook first, then plays the ranking from #5 to #1.
+8. Preview the MP4.
+9. Download the finished video.
 
 TikTok clips are downloaded into `.tmp/tiktok-clips` temporarily and cleaned up after generation.
 
@@ -67,6 +69,8 @@ In this mode:
 2. Long clips are capped by `Seconds per clip`.
 3. Long clips are analyzed for audio energy, then the highest-energy window is used instead of always starting at `0:00`.
 4. TikToks that look like someone else's ranking, compilation, or repost are filtered out before selection.
+
+The opening hook always uses a smart 5-second highlight window so the first few seconds are more likely to grab attention. In browser/manual generation, the hook teases the #1 source clip without showing its rank. In GitHub Actions scheduled generation, the worker tries to use an extra non-ranking TikTok candidate for the hook first, then falls back to the #1 source clip if no extra candidate downloads successfully.
 
 The candidate finder rejects titles that contain patterns like:
 

@@ -97,6 +97,7 @@ const RANK_COUNT = 5;
 const OUTPUT_WIDTH = 1080;
 const OUTPUT_HEIGHT = 1920;
 const DEFAULT_DURATION_SECONDS = 15;
+const HOOK_DURATION_SECONDS = 5;
 const AUTO_RUN_INTERVAL_MS = 15 * 60 * 1000;
 const DEFAULT_DAILY_UPLOAD_TIMES = "5am, 7am, 9am, 11am";
 
@@ -497,6 +498,13 @@ function titleFontForLineCount(lineCount: number) {
   return { size: 48, lineHeight: 58 };
 }
 
+function bestHookEntry(entries: RankingEntry[]) {
+  // The hook should tease the strongest moment before the countdown starts.
+  // In a ranked video, #1 is the safest default source when no separate hook
+  // candidate exists in the browser editor.
+  return [...entries].sort((a, b) => a.rank - b.rank)[0] ?? entries[0];
+}
+
 async function canvasToPngBytes(canvas: HTMLCanvasElement) {
   const blob = await new Promise<Blob>((resolve, reject) => {
     canvas.toBlob((result) => {
@@ -682,6 +690,62 @@ async function createOverlayPng(
       entry.name.length > 30 ? `${entry.name.slice(0, 29).trim()}...` : entry.name;
     ctx.fillText(trimmedName, listX + 118, y + 22);
   });
+
+  return canvasToPngBytes(canvas);
+}
+
+async function createHookOverlayPng(title: string) {
+  const canvas = document.createElement("canvas");
+  canvas.width = OUTPUT_WIDTH;
+  canvas.height = OUTPUT_HEIGHT;
+
+  const ctx = canvas.getContext("2d");
+
+  if (!ctx) {
+    throw new Error("Canvas rendering is unavailable in this browser.");
+  }
+
+  ctx.clearRect(0, 0, OUTPUT_WIDTH, OUTPUT_HEIGHT);
+
+  // The hook overlay avoids full-screen tinting, but uses heavy shadows and
+  // strokes so the opening text stays readable over fast TikTok footage.
+  ctx.textAlign = "center";
+  ctx.textBaseline = "top";
+  ctx.fillStyle = "#ffffff";
+  ctx.strokeStyle = "rgba(0, 0, 0, 0.82)";
+  ctx.lineJoin = "round";
+  ctx.shadowColor = "rgba(0, 0, 0, 0.78)";
+  ctx.shadowBlur = 24;
+  ctx.font = '800 68px "Arial", sans-serif';
+
+  const titleSafeY = 140;
+  const titleLines = wrapTextFully(ctx, title, 910);
+  const titleFont = titleFontForLineCount(titleLines.length);
+  ctx.font = `800 ${titleFont.size}px "Arial", sans-serif`;
+  titleLines.forEach((line, index) => {
+    const y = titleSafeY + index * titleFont.lineHeight;
+    ctx.lineWidth = 8;
+    ctx.strokeText(line, OUTPUT_WIDTH / 2, y);
+    ctx.fillText(line, OUTPUT_WIDTH / 2, y);
+  });
+
+  ctx.shadowBlur = 34;
+  ctx.font = '900 112px "Arial Black", Impact, sans-serif';
+  ctx.lineWidth = 10;
+  ctx.fillStyle = "#39ff88";
+  ctx.strokeText("WAIT FOR #1", OUTPUT_WIDTH / 2, 1190);
+  ctx.fillText("WAIT FOR #1", OUTPUT_WIDTH / 2, 1190);
+
+  ctx.font = '900 66px "Arial", sans-serif';
+  ctx.lineWidth = 8;
+  ctx.fillStyle = "#ffffff";
+  ctx.strokeText("TOP 5 STARTS NOW", OUTPUT_WIDTH / 2, 1330);
+  ctx.fillText("TOP 5 STARTS NOW", OUTPUT_WIDTH / 2, 1330);
+
+  ctx.font = '900 48px "Arial", sans-serif';
+  ctx.fillStyle = "#ffe66d";
+  ctx.strokeText("DO NOT BLINK", OUTPUT_WIDTH / 2, 1426);
+  ctx.fillText("DO NOT BLINK", OUTPUT_WIDTH / 2, 1426);
 
   return canvasToPngBytes(canvas);
 }
@@ -1456,6 +1520,42 @@ export default function Home() {
       const ffmpeg = await getFfmpeg();
       const segmentNames: string[] = [];
       const orderedResolvedEntries = [...resolvedEntries].sort((a, b) => b.rank - a.rank);
+      const hookEntry = bestHookEntry(resolvedEntries);
+
+      if (!hookEntry?.file) {
+        throw new Error("Missing hook clip source.");
+      }
+
+      const hookInputName = `hook-input-${hookEntry.rank}.${fileExtension(hookEntry.file)}`;
+      const hookOverlayName = "overlay-hook.png";
+      const hookSegmentName = "segment-hook.mp4";
+
+      setStatusText("Finding opening hook...");
+      setProgress(20);
+
+      const hookPlan = await browserClipPlan(hookEntry, HOOK_DURATION_SECONDS, true);
+      const hookDurationText = hookPlan.duration.toFixed(2);
+      const hookStartTimeText = hookPlan.start.toFixed(2);
+      const hookFadeDuration = Math.min(0.25, hookPlan.duration / 4);
+      const hookFadeOutStart = Math.max(hookPlan.duration - hookFadeDuration, 0).toFixed(2);
+
+      await ffmpeg.writeFile(hookInputName, await fetchFile(hookEntry.file));
+      await ffmpeg.writeFile(hookOverlayName, await createHookOverlayPng(activeTitle));
+
+      setStatusText("Rendering opening hook...");
+
+      await renderSegment({
+        ffmpeg,
+        inputName: hookInputName,
+        overlayName: hookOverlayName,
+        segmentName: hookSegmentName,
+        startTimeText: hookStartTimeText,
+        durationText: hookDurationText,
+        fadeDuration: hookFadeDuration,
+        fadeOutStart: hookFadeOutStart
+      });
+
+      segmentNames.push(hookSegmentName);
 
       for (const [index, entry] of orderedResolvedEntries.entries()) {
         if (!entry.file) {
@@ -1469,7 +1569,7 @@ export default function Home() {
         setStatusText(
           smartHighlights ? `Finding highlight for #${entry.rank}...` : `Preparing #${entry.rank}...`
         );
-        setProgress(20 + Math.round((index / RANK_COUNT) * 70));
+        setProgress(26 + Math.round((index / RANK_COUNT) * 64));
 
         const clipPlan = await browserClipPlan(entry, duration, smartHighlights);
         const durationText = clipPlan.duration.toFixed(2);

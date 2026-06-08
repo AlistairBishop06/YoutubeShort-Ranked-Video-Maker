@@ -14,6 +14,7 @@ const RANK_COUNT = 5;
 const OUTPUT_WIDTH = 1080;
 const OUTPUT_HEIGHT = 1920;
 const DEFAULT_DURATION_SECONDS = 15;
+const HOOK_DURATION_SECONDS = 5;
 const DEFAULT_WINDOW_MINUTES = 15;
 
 const youtubeDl = createYoutubeDl(
@@ -408,11 +409,7 @@ async function audioHighlightStart(inputPath, sourceDuration, windowSeconds) {
   }
 }
 
-async function clipPlan(inputPath, sourceDurationHint, maxDuration) {
-  if (process.env.CLIP_MODE === "fixed") {
-    return { start: 0, duration: maxDuration };
-  }
-
+async function smartClipPlan(inputPath, sourceDurationHint, maxDuration) {
   const measuredDuration = await probeDuration(inputPath);
   const sourceDuration = Math.max(0.5, measuredDuration || sourceDurationHint || maxDuration);
   const duration = Math.min(maxDuration, sourceDuration);
@@ -425,6 +422,14 @@ async function clipPlan(inputPath, sourceDurationHint, maxDuration) {
     start: await audioHighlightStart(inputPath, sourceDuration, duration),
     duration
   };
+}
+
+async function clipPlan(inputPath, sourceDurationHint, maxDuration) {
+  if (process.env.CLIP_MODE === "fixed") {
+    return { start: 0, duration: maxDuration };
+  }
+
+  return smartClipPlan(inputPath, sourceDurationHint, maxDuration);
 }
 
 function drawText({ text, x, y, size, color = "white", border = 4 }) {
@@ -516,6 +521,60 @@ function videoFilters({ activeEntry, orderedEntries, title, duration, fadeDurati
   return filters.join(",");
 }
 
+function hookVideoFilters({ title, duration, fadeDuration, fadeOutStart }) {
+  const titleLayout = titleTextLayout(title);
+  const filters = [
+    `scale=${OUTPUT_WIDTH}:${OUTPUT_HEIGHT}:force_original_aspect_ratio=increase`,
+    `crop=${OUTPUT_WIDTH}:${OUTPUT_HEIGHT}`,
+    "setsar=1",
+    "format=yuv420p"
+  ];
+
+  titleLayout.lines.forEach((line, index) => {
+    filters.push(drawText({
+      text: line,
+      x: "(w-text_w)/2",
+      y: 140 + index * titleLayout.lineHeight,
+      size: titleLayout.size,
+      color: "white",
+      border: 5
+    }));
+  });
+
+  filters.push(
+    drawText({
+      text: "WAIT FOR #1",
+      x: "(w-text_w)/2",
+      y: 1190,
+      size: 108,
+      color: "0x39ff88",
+      border: 7
+    }),
+    drawText({
+      text: "TOP 5 STARTS NOW",
+      x: "(w-text_w)/2",
+      y: 1330,
+      size: 64,
+      color: "white",
+      border: 5
+    }),
+    drawText({
+      text: "DO NOT BLINK",
+      x: "(w-text_w)/2",
+      y: 1426,
+      size: 46,
+      color: "0xffe66d",
+      border: 5
+    }),
+    `fade=t=in:st=0:d=${fadeDuration}`,
+    `fade=t=out:st=${fadeOutStart}:d=${fadeDuration}`,
+    `trim=0:${duration}`,
+    "setpts=PTS-STARTPTS"
+  );
+
+  return filters.join(",");
+}
+
 async function renderSegment({ activeEntry, duration, inputPath, orderedEntries, outputPath, startTime, title }) {
   const fadeDuration = Math.min(0.25, duration / 4);
   const fadeOutStart = Math.max(duration - fadeDuration, 0).toFixed(2);
@@ -592,8 +651,114 @@ async function renderSegment({ activeEntry, duration, inputPath, orderedEntries,
   ]);
 }
 
+async function renderHookSegment({ duration, inputPath, outputPath, startTime, title }) {
+  const fadeDuration = Math.min(0.25, duration / 4);
+  const fadeOutStart = Math.max(duration - fadeDuration, 0).toFixed(2);
+  const durationText = duration.toFixed(2);
+  const startTimeText = startTime.toFixed(2);
+  const filter = hookVideoFilters({
+    title,
+    duration: durationText,
+    fadeDuration,
+    fadeOutStart
+  });
+  const hasAudio = await hasAudioStream(inputPath);
+  const outputArgs = [
+    "-map",
+    "[v]",
+    "-map",
+    "[a]",
+    "-r",
+    "30",
+    "-c:v",
+    "libx264",
+    "-preset",
+    "veryfast",
+    "-crf",
+    "24",
+    "-c:a",
+    "aac",
+    "-b:a",
+    "128k",
+    "-ar",
+    "44100",
+    "-ac",
+    "2",
+    "-movflags",
+    "+faststart",
+    outputPath
+  ];
+
+  if (hasAudio) {
+    await run("ffmpeg", [
+      "-y",
+      "-ss",
+      startTimeText,
+      "-i",
+      inputPath,
+      "-t",
+      durationText,
+      "-filter_complex",
+      `[0:v]${filter}[v];[0:a]atrim=0:${durationText},asetpts=PTS-STARTPTS,apad=pad_dur=${durationText},atrim=0:${durationText},aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo[a]`,
+      ...outputArgs
+    ]);
+    return;
+  }
+
+  await run("ffmpeg", [
+    "-y",
+    "-ss",
+    startTimeText,
+    "-i",
+    inputPath,
+    "-f",
+    "lavfi",
+    "-t",
+    durationText,
+    "-i",
+    "anullsrc=channel_layout=stereo:sample_rate=44100",
+    "-t",
+    durationText,
+    "-filter_complex",
+    `[0:v]${filter}[v];[1:a]atrim=0:${durationText},asetpts=PTS-STARTPTS,aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo[a]`,
+    ...outputArgs
+  ]);
+}
+
 function concatPath(path) {
   return path.replace(/'/g, "'\\''");
+}
+
+async function resolveHookEntry({ entries, idea, workDir }) {
+  const rankedIds = new Set(entries.map((entry) => entry.id).filter(Boolean));
+  const hookCandidates = idea.candidates.filter((candidate) => !rankedIds.has(candidate.id));
+
+  for (const candidate of hookCandidates) {
+    try {
+      console.log(`Downloading hook candidate: ${candidate.url}`);
+      const inputPath = await downloadTikTokClip(candidate, workDir, "hook");
+
+      return {
+        id: candidate.id,
+        name: cleanText(candidate.name, "Opening hook"),
+        sourceDuration: candidate.duration || 0,
+        url: candidate.url,
+        inputPath
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "download failed";
+      console.warn(`Skipping hook candidate ${candidate.url}: ${message}`);
+    }
+  }
+
+  const fallback = [...entries].sort((a, b) => a.rank - b.rank)[0];
+
+  if (!fallback) {
+    throw new Error("No usable clip is available for the opening hook.");
+  }
+
+  console.log(`Using #${fallback.rank} as the opening hook source.`);
+  return fallback;
 }
 
 async function renderRankingVideo({ idea, selectedCandidates, workDir }) {
@@ -630,6 +795,25 @@ async function renderRankingVideo({ idea, selectedCandidates, workDir }) {
 
   const orderedEntries = [...entries].sort((a, b) => b.rank - a.rank);
   const segmentPaths = [];
+  const hookEntry = await resolveHookEntry({ entries, idea, workDir });
+  const hookPlan = await smartClipPlan(
+    hookEntry.inputPath,
+    hookEntry.sourceDuration,
+    HOOK_DURATION_SECONDS
+  );
+  const hookOutputPath = join(workDir, "segment-hook.mp4");
+
+  console.log(
+    `Rendering opening hook from ${hookPlan.start.toFixed(2)}s for ${hookPlan.duration.toFixed(2)}s`
+  );
+  await renderHookSegment({
+    duration: hookPlan.duration,
+    inputPath: hookEntry.inputPath,
+    outputPath: hookOutputPath,
+    startTime: hookPlan.start,
+    title: idea.title
+  });
+  segmentPaths.push(hookOutputPath);
 
   for (const [index, entry] of orderedEntries.entries()) {
     const outputPath = join(workDir, `segment-${index}.mp4`);
