@@ -326,8 +326,12 @@ function emojiPackForTitle(value) {
 function viralVideoTitle(value) {
   const [firstEmoji, secondEmoji] = emojiPackForTitle(value);
   const cleanTitle = cleanText(value, "Top 5 Viral Moments");
+  const suffix = cleanTitle.toLowerCase().includes("wait for #1") ? "" : " | Wait for #1";
+  const maxBaseLength = Math.max(24, 100 - firstEmoji.length - secondEmoji.length - suffix.length - 4);
+  const titleBase =
+    cleanTitle.length > maxBaseLength ? `${cleanTitle.slice(0, maxBaseLength - 3).trim()}...` : cleanTitle;
 
-  return `${firstEmoji} ${cleanTitle} ${secondEmoji}`.slice(0, 100);
+  return `${firstEmoji} ${titleBase}${suffix} ${secondEmoji}`.slice(0, 100);
 }
 
 function uploadTagsFromDescription(description, fallbackHashtags = []) {
@@ -354,6 +358,34 @@ function buildFallbackDescription(idea, selectedCandidates) {
     names.length ? `Best moments: ${names.join(", ")} ${laughEmoji}` : "Which clip wins?",
     "Who got cooked the hardest? Comment your winner 👇",
     "Subscribe for more funny moments 🏆",
+    "",
+    hashtags.join(" ")
+  ].join("\n");
+}
+
+function buildViralFallbackDescription(idea, selectedCandidates) {
+  const [laughEmoji, fireEmoji, shockEmoji] = emojiPackForTitle(idea.title);
+  const names = selectedCandidates.map((candidate) => candidate.name).filter(Boolean).slice(0, 5);
+  const hashtags = idea.hashtags?.length
+    ? idea.hashtags
+    : [
+        "#Top5",
+        "#ViralClips",
+        "#FunnyClips",
+        "#WatchTillTheEnd",
+        "#StreamerMoments",
+        "#ComedyShorts",
+        "#Shorts",
+        "#YouTubeShorts",
+        "#FYP"
+      ];
+
+  return [
+    `${laughEmoji} ${idea.title} ${fireEmoji}`,
+    `${shockEmoji} The countdown gets crazier every clip. Wait for #1.`,
+    names.length ? `Featured moments: ${names.join(", ")} ${laughEmoji}` : "Which moment deserves #1?",
+    "Comment the funniest clip and share this with someone who would replay #1.",
+    `New creator rankings dropping soon. Subscribe for more ${fireEmoji}`,
     "",
     hashtags.join(" ")
   ].join("\n");
@@ -1148,7 +1180,7 @@ async function main() {
       selectedCandidates,
       workDir
     });
-    const description = idea.description || buildFallbackDescription(idea, selectedCandidates.slice(0, RANK_COUNT));
+    const description = idea.description || buildViralFallbackDescription(idea, selectedCandidates.slice(0, RANK_COUNT));
     const url = await uploadToYouTube({
       description,
       filePath: outputPath,

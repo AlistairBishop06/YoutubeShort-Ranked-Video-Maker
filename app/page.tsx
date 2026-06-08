@@ -310,8 +310,12 @@ function emojiPackForTitle(value: string) {
 function viralVideoTitle(value: string) {
   const [firstEmoji, secondEmoji] = emojiPackForTitle(value);
   const cleanTitle = value.trim() || "Top 5 Viral Moments";
+  const suffix = cleanTitle.toLowerCase().includes("wait for #1") ? "" : " | Wait for #1";
+  const maxBaseLength = Math.max(24, 100 - firstEmoji.length - secondEmoji.length - suffix.length - 4);
+  const titleBase =
+    cleanTitle.length > maxBaseLength ? `${cleanTitle.slice(0, maxBaseLength - 3).trim()}...` : cleanTitle;
 
-  return `${firstEmoji} ${cleanTitle} ${secondEmoji}`;
+  return `${firstEmoji} ${titleBase}${suffix} ${secondEmoji}`.slice(0, 100);
 }
 
 function downloadFileName(value: string) {
@@ -364,6 +368,63 @@ function fallbackUploadDescription(title: string, entries: RankingEntry[]) {
     "Subscribe for more funny moments 🏆",
     "",
     "#Top5 #ViralTikTok #FunnyMoments #MustWatch #Shorts #YouTubeShorts #FYP #Trending"
+  ].join("\n");
+}
+
+function buildViralCopyDescription(idea: ViralIdea, selectedCandidates: ViralCandidate[]) {
+  const candidates =
+    selectedCandidates.length === RANK_COUNT
+      ? selectedCandidates
+      : idea.candidates.slice(0, RANK_COUNT);
+  const [laughEmoji, fireEmoji, shockEmoji] = emojiPackForTitle(idea.title);
+  const featureWords = candidates
+    .map((candidate) => candidate.name)
+    .filter(Boolean)
+    .slice(0, 5)
+    .join(", ");
+  const hashtags = idea.hashtags?.length
+    ? idea.hashtags
+    : [
+        "#TikTokRankings",
+        "#Top5",
+        "#ViralClips",
+        "#FunnyClips",
+        "#WatchTillTheEnd",
+        "#Shorts",
+        "#YouTubeShorts",
+        "#FYP"
+      ];
+
+  return [
+    `${laughEmoji} ${idea.title} ${fireEmoji}`,
+    `${shockEmoji} The countdown gets crazier every clip. Wait for #1.`,
+    featureWords
+      ? `Featured moments: ${featureWords} ${laughEmoji}`
+      : `Which moment deserves the top spot? ${laughEmoji}`,
+    "Comment the funniest clip and share this with someone who would replay #1.",
+    `New creator rankings dropping soon. Subscribe for more ${fireEmoji}`,
+    "",
+    hashtags.join(" ")
+  ].join("\n");
+}
+
+function fallbackViralUploadDescription(title: string, entries: RankingEntry[]) {
+  const [laughEmoji, fireEmoji, shockEmoji] = emojiPackForTitle(title);
+  const names = entries
+    .map((entry) => entry.name.trim())
+    .filter(Boolean)
+    .slice(0, 5);
+
+  return [
+    `${laughEmoji} ${title} ${fireEmoji}`,
+    `${shockEmoji} The countdown gets crazier every clip. Wait for #1.`,
+    names.length
+      ? `Featured moments: ${names.join(", ")} ${laughEmoji}`
+      : `Which moment deserves the top spot? ${laughEmoji}`,
+    "Comment the funniest clip and share this with someone who would replay #1.",
+    `New creator rankings dropping soon. Subscribe for more ${fireEmoji}`,
+    "",
+    "#Top5 #ViralClips #FunnyClips #WatchTillTheEnd #StreamerMoments #ComedyShorts #Shorts #YouTubeShorts #FYP"
   ].join("\n");
 }
 
@@ -1103,11 +1164,11 @@ export default function Home() {
   const copyPasteDescription = useMemo(
     () =>
       viralIdea
-        ? buildCopyDescription(viralIdea, selectedViralCandidates)
+        ? buildViralCopyDescription(viralIdea, selectedViralCandidates)
         : "",
     [selectedViralCandidates, viralIdea]
   );
-  const uploadDescription = copyPasteDescription || fallbackUploadDescription(title, entries);
+  const uploadDescription = copyPasteDescription || fallbackViralUploadDescription(title, entries);
   const uploadTags = useMemo(() => uploadTagsFromDescription(uploadDescription), [uploadDescription]);
   const parsedDailySchedule = useMemo(
     () => parseDailyScheduleInput(dailyScheduleInput),
@@ -1434,7 +1495,7 @@ export default function Home() {
       }
 
       const nextEntries = entriesFromCandidates(selectedCandidates);
-      const nextDescription = buildCopyDescription(nextIdea, selectedCandidates);
+      const nextDescription = buildViralCopyDescription(nextIdea, selectedCandidates);
       const nextTags = uploadTagsFromDescription(nextDescription);
 
       // Scheduled runs pass the freshly found idea directly into generation so

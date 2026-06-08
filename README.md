@@ -17,6 +17,7 @@ The app lets you:
 - Pop in a large temporary rank reveal at the start of each ranked clip.
 - Preserve audio from the source clips.
 - Generate a copy-paste viral description with emojis and hashtags.
+- Auto-generate hookier titles and short clip names for the video overlay.
 - Optionally auto-upload the finished MP4 to YouTube.
 - Auto-run every 15 minutes to find a new idea, generate a new video, and upload it.
 - Schedule daily upload slots like `5am, 7am, 9am, 11am`.

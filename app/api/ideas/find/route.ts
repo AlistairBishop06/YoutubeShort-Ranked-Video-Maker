@@ -310,39 +310,47 @@ const HANDLE_WORD_PATTERNS = [
 
 const REACTION_LABELS = [
   "no way he said that",
-  "violation",
+  "absolute violation",
   "instant regret",
   "he crashed out",
   "chat went silent",
+  "chat was screaming",
   "caught lacking",
   "bro lost it",
   "that was personal",
   "he was not ready",
   "absolute chaos",
-  "rage moment",
+  "he knew he messed up",
+  "that escalated fast",
+  "the room went silent",
+  "everyone lost it",
+  "instant karma",
   "too far",
   "wild reaction",
   "awkward silence",
+  "bro folded instantly",
+  "no way this happened",
+  "this got personal",
   "unreal timing"
 ];
 
 const CREATOR_LABELS: Record<string, string[]> = {
-  caseoh: ["caseoh crashout", "caseoh got violated", "caseoh rage moment", "chat cooked him"],
-  speed: ["speed lost it", "speed crashout", "speed went crazy", "no way speed said that"],
-  ishowspeed: ["speed lost it", "speed crashout", "speed went crazy", "no way speed said that"],
-  sidemen: ["sidemen violation", "sidemen chaos", "the boys lost it", "sidemen cooked him"],
-  ksi: ["ksi got violated", "ksi crashout", "ksi lost it", "no way ksi said that"],
-  xqc: ["xqc crashout", "xqc lost it", "chat cooked him", "xqc rage moment"],
-  "kai cenat": ["kai lost it", "kai crashout", "kai got violated", "no way kai said that"],
-  mrbeast: ["mrbeast chaos", "no way he did that", "mrbeast went too far", "wild mrbeast moment"],
-  "logan paul": ["logan got cooked", "logan crashout", "no way logan said that", "logan went too far"],
-  "adin ross": ["adin got cooked", "adin crashout", "no way adin said that", "chat cooked him"],
-  "beta squad": ["beta squad violation", "chunkz got cooked", "the room went silent", "they took it too far"],
-  "nelk boys": ["full send chaos", "nelk went too far", "steve got cooked", "prank went wrong"],
-  streamer: ["streamer crashout", "chat went silent", "no way he said that", "live on stream"],
-  youtuber: ["youtuber crashout", "no way he posted that", "creator got cooked", "comments went wild"],
-  youtube: ["youtube chaos", "creator got cooked", "no way he posted that", "comments went wild"],
-  twitch: ["twitch crashout", "chat went silent", "live on stream", "stream went wrong"]
+  caseoh: ["caseoh got pressed", "caseoh almost lost it", "chat roasted caseoh", "caseoh got humbled", "caseoh crashout"],
+  speed: ["speed saw red", "speed started screaming", "speed got humbled", "speed went silent", "no way speed said that"],
+  ishowspeed: ["speed saw red", "speed started screaming", "speed got humbled", "speed went silent", "no way speed said that"],
+  sidemen: ["sidemen violation", "the boys lost it", "sidemen cooked him", "sidemen chaos", "the room went silent"],
+  ksi: ["ksi got humbled", "ksi started laughing", "ksi got violated", "ksi lost it", "no way ksi said that"],
+  xqc: ["xqc saw red", "xqc lost it", "chat cooked him", "xqc rage moment", "xqc got humbled"],
+  "kai cenat": ["kai lost it", "kai got humbled", "kai got violated", "chat had kai crying", "no way kai said that"],
+  mrbeast: ["mrbeast chaos", "no way he did that", "mrbeast went too far", "wild mrbeast moment", "everyone panicked"],
+  "logan paul": ["logan got cooked", "logan got humbled", "no way logan said that", "logan went too far", "the room froze"],
+  "adin ross": ["adin got cooked", "adin got humbled", "no way adin said that", "chat cooked him", "adin lost it"],
+  "beta squad": ["beta squad violation", "chunkz got cooked", "the room went silent", "they took it too far", "everyone folded"],
+  "nelk boys": ["full send chaos", "nelk went too far", "steve got cooked", "prank went wrong", "instant regret"],
+  streamer: ["streamer crashout", "chat went silent", "chat was screaming", "live on stream", "stream went wrong"],
+  youtuber: ["creator got humbled", "no way he posted that", "creator got cooked", "comments went wild", "instant regret"],
+  youtube: ["youtube chaos", "creator got humbled", "no way he posted that", "comments went wild", "instant regret"],
+  twitch: ["twitch crashout", "chat went silent", "chat was screaming", "live on stream", "stream went wrong"]
 };
 
 function decodeXml(value: string) {
@@ -434,6 +442,50 @@ function creatorFromQuery(query: string) {
   return "";
 }
 
+function displayCreatorName(value: string) {
+  return titleCase(value).toLowerCase();
+}
+
+function labelOptionsForCue(title: string, creator: string) {
+  const name = creator ? displayCreatorName(creator) : "";
+
+  if (/\b(scream|screaming|yell|yelling|shout|rage|mad|angry)\b/.test(title)) {
+    return name
+      ? [`${name} saw red`, `${name} started screaming`, `${name} lost it`, "chat was screaming"]
+      : ["he started screaming", "chat was screaming", "everyone lost it", "bro lost it"];
+  }
+
+  if (/\b(laugh|laughing|crying|cried|funny|hilarious)\b/.test(title)) {
+    return name
+      ? [`${name} had them crying`, `${name} could not stop laughing`, "everyone was crying", "chat was crying"]
+      : ["everyone was crying", "chat was crying", "he could not stop laughing", "no way this happened"];
+  }
+
+  if (/\b(awkward|silent|silence|speechless|quiet)\b/.test(title)) {
+    return ["the room went silent", "awkward silence", "he was not ready", "that got awkward fast"];
+  }
+
+  if (/\b(fail|fails|wrong|regret|karma)\b/.test(title)) {
+    return ["instant regret", "instant karma", "he knew he messed up", "that escalated fast"];
+  }
+
+  if (/\b(roast|cooked|violation|violated|humbled|clowned)\b/.test(title)) {
+    return name
+      ? [`${name} got humbled`, `${name} got cooked`, `${name} got violated`, "absolute violation"]
+      : ["absolute violation", "he got cooked", "he got humbled", "that was personal"];
+  }
+
+  if (/\b(chat|stream|live)\b/.test(title)) {
+    return ["chat was screaming", "chat went silent", "live on stream", "stream went wrong"];
+  }
+
+  if (/\b(no\s*way|wild|crazy|insane|unreal)\b/.test(title)) {
+    return ["no way this happened", "absolute chaos", "unreal timing", "everyone lost it"];
+  }
+
+  return null;
+}
+
 function importantWords(video: TikWMVideo, query: string) {
   const title = sourceTitle(video);
   const topicWords = new Set(cleanTopic(query).split(/\s+/).filter(Boolean));
@@ -480,29 +532,34 @@ function viralClipLabel(video: TikWMVideo, query: string) {
   const creatorLabels = creator ? CREATOR_LABELS[creator] : null;
   const words = importantWords(video, query);
   const topWord = words[0]?.raw ?? "";
+  const cueLabels = labelOptionsForCue(title, creator);
 
-  if (creatorLabels && (title.includes("rage") || title.includes("mad") || title.includes("angry"))) {
-    return pickBySeed(creatorLabels.filter((label) => label.includes("crashout") || label.includes("rage")), seed);
+  if (cueLabels) {
+    return pickBySeed(cueLabels, seed);
   }
 
   if (title.includes("violation") || title.includes("violated") || title.includes("roast") || title.includes("cooked")) {
-    return creator ? `${titleCase(creator).toLowerCase()} got violated` : "violation";
+    return creator ? `${displayCreatorName(creator)} got violated` : "absolute violation";
   }
 
   if (title.includes("crashout") || title.includes("crash out")) {
-    return creator ? `${titleCase(creator).toLowerCase()} crashout` : "he crashed out";
+    return creator ? `${displayCreatorName(creator)} crashout` : "he crashed out";
   }
 
   if (title.includes("said") || title.includes("says") || title.includes("speechless")) {
-    return creator ? `no way ${titleCase(creator).toLowerCase()} said that` : "no way he said that";
+    return creator ? `no way ${displayCreatorName(creator)} said that` : "no way he said that";
   }
 
   if (title.includes("reaction") || title.includes("reacts")) {
-    return creator ? `${titleCase(creator).toLowerCase()} lost it` : "wild reaction";
+    return creator ? `${displayCreatorName(creator)} lost it` : "wild reaction";
   }
 
   if (title.includes("fail") || title.includes("fails")) {
     return "instant regret";
+  }
+
+  if (topWord && !creatorLabels) {
+    return pickBySeed([`${topWord} moment`, `${topWord} chaos`, `${topWord} reaction`], seed).toLowerCase();
   }
 
   if (creatorLabels) {
@@ -786,7 +843,12 @@ function buildHashtags(topic: string, candidates: Candidate[]) {
     "#TikTokRankings",
     "#Top5",
     "#ViralTikTok",
+    "#ViralClips",
+    "#FunnyClips",
     "#FunnyMoments",
+    "#WatchTillTheEnd",
+    "#ComedyShorts",
+    "#StreamerMoments",
     "#MustWatch",
     "#Shorts",
     "#YouTubeShorts",
@@ -851,6 +913,76 @@ function generatedTitle(topic: string) {
   return `Top 5 ${titled} Funny Moments`;
 }
 
+function topicSubject(topic: string) {
+  const subject = cleanTopic(topic)
+    .replace(/\b(funny|moments?|clips?|best|viral)\b/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  return titleCase(subject || topic);
+}
+
+function generatedViralTitle(topic: string) {
+  const subject = topicSubject(topic);
+  const clean = cleanTopic(topic);
+  const templates = [
+    `Top 5 ${subject} Clips That Got Worse`,
+    `Top 5 ${subject} Moments You Can't Skip`,
+    `Top 5 ${subject} Clips That Had Everyone Crying`,
+    `Top 5 ${subject} Moments That Went Too Far`,
+    `Top 5 ${subject} Clips That Get Wilder`
+  ];
+
+  if (clean.includes("stream") || clean.includes("twitch") || clean.includes("chat")) {
+    templates.push(
+      `Top 5 ${subject} Moments That Had Chat Screaming`,
+      `Top 5 ${subject} Clips That Went Wild Live`
+    );
+  }
+
+  if (clean.includes("fail") || clean.includes("rage") || clean.includes("crashout")) {
+    templates.push(
+      `Top 5 ${subject} Moments That Got Worse`,
+      `Top 5 ${subject} Clips They Instantly Regretted`
+    );
+  }
+
+  if (clean.includes("fan") || clean.includes("public") || clean.includes("awkward")) {
+    templates.push(
+      `Top 5 ${subject} Moments That Got Awkward Fast`,
+      `Top 5 ${subject} Clips That Made Everyone Freeze`
+    );
+  }
+
+  return pickBySeed(templates, `${topic}:${Date.now()}:${Math.random()}`);
+}
+
+function buildViralDescription(title: string, topic: string, candidates: Candidate[]) {
+  const selectedCandidates = candidates.slice(0, 5);
+  const [laughEmoji, fireEmoji, shockEmoji] = emojiPack(topic);
+  const featureWords = selectedCandidates
+    .map((candidate) => candidate.name)
+    .filter(Boolean)
+    .slice(0, 5)
+    .join(", ");
+  const hashtags = buildHashtags(topic, selectedCandidates);
+
+  return {
+    hashtags,
+    description: [
+      `${laughEmoji} ${title} ${fireEmoji}`,
+      `${shockEmoji} The countdown gets crazier every clip. Wait for #1.`,
+      featureWords
+        ? `Featured moments: ${featureWords} ${laughEmoji}`
+        : `Which moment deserves the top spot? ${laughEmoji}`,
+      "Comment the funniest clip and share this with someone who would replay #1.",
+      `New creator rankings dropping soon. Subscribe for more ${fireEmoji}`,
+      "",
+      hashtags.join(" ")
+    ].join("\n")
+  };
+}
+
 export async function POST(request: NextRequest) {
   const body = (await request.json().catch(() => ({}))) as { excludeIds?: string[] };
   const excludedIds = new Set([
@@ -910,8 +1042,8 @@ export async function POST(request: NextRequest) {
   if (selectedIdea) {
     rememberTopic(selectedIdea.idea);
     rememberCandidateIds(selectedIdea.candidates.slice(0, 5).map((candidate) => candidate.id));
-    const title = generatedTitle(selectedIdea.idea);
-    const { description, hashtags } = buildDescription(
+    const title = generatedViralTitle(selectedIdea.idea);
+    const { description, hashtags } = buildViralDescription(
       title,
       selectedIdea.idea,
       selectedIdea.candidates
