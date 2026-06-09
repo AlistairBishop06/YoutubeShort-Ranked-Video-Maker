@@ -1659,19 +1659,39 @@ export default function Home() {
     }
   }
 
+  function candidatesFromSelectedIds(candidateIds: string[], nextIdea: ViralIdea) {
+    return candidateIds
+      .map((id) => nextIdea.candidates.find((candidate) => candidate.id === id))
+      .filter((candidate): candidate is ViralCandidate => Boolean(candidate));
+  }
+
+  function syncSelectedCandidates(candidateIds: string[], nextIdea = viralIdea) {
+    if (!nextIdea) {
+      return;
+    }
+
+    const selected = candidatesFromSelectedIds(candidateIds, nextIdea);
+
+    if (selected.length === RANK_COUNT) {
+      applyCandidates(selected, nextIdea.title);
+    }
+  }
+
   function toggleCandidate(candidateId: string) {
+    if (!viralIdea) {
+      return;
+    }
+
     setCopiedDescription(false);
-    setSelectedCandidateIds((current) => {
-      if (current.includes(candidateId)) {
-        return current.filter((id) => id !== candidateId);
-      }
 
-      if (current.length >= RANK_COUNT) {
-        return current;
-      }
+    const nextSelectedIds = selectedCandidateIds.includes(candidateId)
+      ? selectedCandidateIds.filter((id) => id !== candidateId)
+      : selectedCandidateIds.length >= RANK_COUNT
+        ? [...selectedCandidateIds.slice(0, RANK_COUNT - 1), candidateId]
+        : [...selectedCandidateIds, candidateId];
 
-      return [...current, candidateId];
-    });
+    setSelectedCandidateIds(nextSelectedIds);
+    syncSelectedCandidates(nextSelectedIds, viralIdea);
   }
 
   function applySelectedCandidates() {
@@ -1679,9 +1699,7 @@ export default function Home() {
       return;
     }
 
-    const selected = selectedCandidateIds
-      .map((id) => viralIdea.candidates.find((candidate) => candidate.id === id))
-      .filter((candidate): candidate is ViralCandidate => Boolean(candidate));
+    const selected = candidatesFromSelectedIds(selectedCandidateIds, viralIdea);
 
     applyCandidates(selected, viralIdea.title);
   }
