@@ -702,7 +702,9 @@ function videoFilters({
   return [
     `[0:v]${filters.join(",")}[rankBase]`,
     progressBarGraph("rankBase", "rankProgress", duration, accentColor),
-    `[rankProgress]drawbox=x=0:y=0:w=iw:h=ih:color=black@1:t=fill:enable='between(t\\,0\\,${TRANSITION_SFX_SECONDS})',fade=t=in:st=0:d=${fadeDuration},fade=t=out:st=${fadeOutStart}:d=${fadeDuration},trim=0:${duration},setpts=PTS-STARTPTS[v]`
+    `[rankProgress]fade=t=in:st=0:d=${fadeDuration},fade=t=out:st=${fadeOutStart}:d=${fadeDuration},trim=0:${duration},setpts=PTS-STARTPTS,fps=30,format=yuv420p[rankClip]`,
+    `color=c=black:s=${OUTPUT_WIDTH}x${OUTPUT_HEIGHT}:r=30:d=${TRANSITION_SFX_SECONDS.toFixed(2)},format=yuv420p[transitionVideo]`,
+    "[transitionVideo][rankClip]concat=n=2:v=1:a=0[v]"
   ].join(";");
 }
 
@@ -772,6 +774,9 @@ async function renderSegment({
   const fadeOutStart = Math.max(duration - fadeDuration, 0).toFixed(2);
   const durationText = duration.toFixed(2);
   const startTimeText = startTime.toFixed(2);
+  const transitionDurationText = TRANSITION_SFX_SECONDS.toFixed(2);
+  const outputDurationText = (duration + TRANSITION_SFX_SECONDS).toFixed(2);
+  const transitionDelayMs = Math.round(TRANSITION_SFX_SECONDS * 1000);
   const filter = videoFilters({
     accentColor,
     activeEntry,
@@ -782,10 +787,10 @@ async function renderSegment({
     fadeOutStart
   });
   const hasAudio = await hasAudioStream(inputPath);
-  const sourceAudioFilter = `[0:a]atrim=0:${durationText},asetpts=PTS-STARTPTS,apad=pad_dur=${durationText},atrim=0:${durationText},aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo[clipa]`;
-  const sfxAudioFilter = `[1:a]atrim=0:${durationText},asetpts=PTS-STARTPTS,apad=pad_dur=${durationText},atrim=0:${durationText},volume=1.35,aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo[sfx]`;
+  const sourceAudioFilter = `[0:a]atrim=0:${durationText},asetpts=PTS-STARTPTS,aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo,adelay=${transitionDelayMs}|${transitionDelayMs},apad=pad_dur=${transitionDurationText},atrim=0:${outputDurationText}[clipa]`;
+  const sfxAudioFilter = `[1:a]atrim=0:${transitionDurationText},asetpts=PTS-STARTPTS,volume=1.35,aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo,apad=pad_dur=${durationText},atrim=0:${outputDurationText}[sfx]`;
   const mixedAudioFilter = "[clipa][sfx]amix=inputs=2:duration=first:dropout_transition=0,volume=1.05[a]";
-  const silentAudioFilter = `[2:a]atrim=0:${durationText},asetpts=PTS-STARTPTS,aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo[clipa]`;
+  const silentAudioFilter = `[2:a]atrim=0:${outputDurationText},asetpts=PTS-STARTPTS,aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo[clipa]`;
   const outputArgs = [
     "-map",
     "[v]",
@@ -822,7 +827,7 @@ async function renderSegment({
       "-i",
       sfxPath,
       "-t",
-      durationText,
+      outputDurationText,
       "-filter_complex",
       `${filter};${sourceAudioFilter};${sfxAudioFilter};${mixedAudioFilter}`,
       ...outputArgs
@@ -841,11 +846,11 @@ async function renderSegment({
     "-f",
     "lavfi",
     "-t",
-    durationText,
+    outputDurationText,
     "-i",
     "anullsrc=channel_layout=stereo:sample_rate=44100",
     "-t",
-    durationText,
+    outputDurationText,
     "-filter_complex",
     `${filter};${silentAudioFilter};${sfxAudioFilter};${mixedAudioFilter}`,
     ...outputArgs
