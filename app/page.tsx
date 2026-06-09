@@ -97,14 +97,40 @@ type HookTeaserLines = {
   primary: string;
 };
 
+type AccentColor = {
+  hex: string;
+  ffmpeg: string;
+};
+
+type MedalRowBackground = {
+  hex: string;
+  ffmpeg: string;
+};
+
 const RANK_COUNT = 5;
 const OUTPUT_WIDTH = 1080;
 const OUTPUT_HEIGHT = 1920;
 const DEFAULT_DURATION_SECONDS = 15;
 const HOOK_DURATION_SECONDS = 5;
 const SFX_SAMPLE_RATE = 44100;
+const TRANSITION_SFX_SECONDS = 0.64;
 const AUTO_RUN_INTERVAL_MS = 15 * 60 * 1000;
 const DEFAULT_DAILY_UPLOAD_TIMES = "5am, 7am, 9am, 11am";
+const ACCENT_COLORS: AccentColor[] = [
+  { hex: "#39ff88", ffmpeg: "0x39ff88" },
+  { hex: "#ff335f", ffmpeg: "0xff335f" },
+  { hex: "#33a7ff", ffmpeg: "0x33a7ff" },
+  { hex: "#a855ff", ffmpeg: "0xa855ff" },
+  { hex: "#ffcc33", ffmpeg: "0xffcc33" },
+  { hex: "#ff7a2f", ffmpeg: "0xff7a2f" },
+  { hex: "#26f4ff", ffmpeg: "0x26f4ff" },
+  { hex: "#ff4de3", ffmpeg: "0xff4de3" }
+];
+const MEDAL_ROW_BACKGROUNDS: Record<number, MedalRowBackground> = {
+  1: { hex: "#f7c531", ffmpeg: "0xf7c531" },
+  2: { hex: "#d7dde8", ffmpeg: "0xd7dde8" },
+  3: { hex: "#c87932", ffmpeg: "0xc87932" }
+};
 
 const initialEntries = Array.from({ length: RANK_COUNT }, (_, index) => ({
   rank: index + 1,
@@ -575,6 +601,19 @@ function randomItem<T>(items: T[]) {
   return items[Math.floor(Math.random() * items.length)];
 }
 
+function randomAccentColor() {
+  return ACCENT_COLORS[Math.floor(Math.random() * ACCENT_COLORS.length)] ?? ACCENT_COLORS[0];
+}
+
+function hexToRgba(hex: string, alpha: number) {
+  const normalized = hex.replace("#", "");
+  const red = Number.parseInt(normalized.slice(0, 2), 16);
+  const green = Number.parseInt(normalized.slice(2, 4), 16);
+  const blue = Number.parseInt(normalized.slice(4, 6), 16);
+
+  return `rgba(${red}, ${green}, ${blue}, ${alpha})`;
+}
+
 function hookTeaserLines(value: string): HookTeaserLines {
   const lower = value.toLowerCase();
   const primary = [
@@ -765,7 +804,8 @@ async function browserClipPlan(entry: RankingEntry, maxDuration: number, smartHi
 async function createOverlayPng(
   title: string,
   activeEntry: RankingEntry,
-  orderedEntries: RankingEntry[]
+  orderedEntries: RankingEntry[],
+  accentColor: AccentColor
 ) {
   const canvas = document.createElement("canvas");
   canvas.width = OUTPUT_WIDTH;
@@ -792,21 +832,34 @@ async function createOverlayPng(
   const titleLines = wrapTextFully(ctx, title, 910);
   const titleFont = titleFontForLineCount(titleLines.length);
   ctx.font = `800 ${titleFont.size}px "Arial", sans-serif`;
+  ctx.lineJoin = "round";
+  ctx.lineWidth = 8;
+  ctx.strokeStyle = "rgba(0, 0, 0, 0.82)";
+  ctx.fillStyle = accentColor.hex;
   titleLines.forEach((line, index) => {
-    ctx.fillText(line, OUTPUT_WIDTH / 2, titleSafeY + index * titleFont.lineHeight);
+    const y = titleSafeY + index * titleFont.lineHeight;
+    ctx.strokeText(line, OUTPUT_WIDTH / 2, y);
+    ctx.fillText(line, OUTPUT_WIDTH / 2, y);
   });
 
   ctx.textAlign = "left";
   ctx.shadowBlur = 30;
   ctx.font = '900 178px "Arial Black", Impact, sans-serif';
-  ctx.fillStyle = "#39ff88";
+  ctx.lineWidth = 12;
+  ctx.strokeStyle = "rgba(0, 0, 0, 0.88)";
+  ctx.fillStyle = accentColor.hex;
+  ctx.strokeText(`#${activeEntry.rank}`, 70, 1215);
   ctx.fillText(`#${activeEntry.rank}`, 70, 1215);
 
   ctx.font = '900 64px "Arial", sans-serif';
-  ctx.fillStyle = "#ffffff";
+  ctx.lineWidth = 7;
+  ctx.strokeStyle = "rgba(0, 0, 0, 0.84)";
+  ctx.fillStyle = accentColor.hex;
   const nameLines = wrapText(ctx, activeEntry.name, 900, 2);
   nameLines.forEach((line, index) => {
-    ctx.fillText(line, 72, 1400 + index * 74);
+    const y = 1400 + index * 74;
+    ctx.strokeText(line, 72, y);
+    ctx.fillText(line, 72, y);
   });
 
   const listX = 70;
@@ -822,17 +875,27 @@ async function createOverlayPng(
     const isActive = entry.rank === activeEntry.rank;
     const isComplete =
       orderedEntries.findIndex((ordered) => ordered.rank === activeEntry.rank) > index;
+    const medalRowBackground = MEDAL_ROW_BACKGROUNDS[entry.rank];
 
-    ctx.fillStyle = isActive
-      ? "rgba(57, 255, 136, 0.24)"
-      : isComplete
-        ? "rgba(255, 255, 255, 0.16)"
-        : "rgba(255, 255, 255, 0.08)";
+    ctx.fillStyle = medalRowBackground
+      ? hexToRgba(medalRowBackground.hex, isActive ? 0.46 : isComplete ? 0.34 : 0.24)
+      : isActive
+        ? hexToRgba(accentColor.hex, 0.24)
+        : isComplete
+          ? "rgba(255, 255, 255, 0.16)"
+          : "rgba(255, 255, 255, 0.08)";
     ctx.beginPath();
     ctx.roundRect(listX, y, 940, 44, 18);
     ctx.fill();
 
-    ctx.fillStyle = isActive ? "#39ff88" : isComplete ? "#ffffff" : "rgba(255, 255, 255, 0.68)";
+    ctx.fillStyle = isActive ? accentColor.hex : isComplete ? "#ffffff" : "rgba(255, 255, 255, 0.68)";
+
+    if (isActive) {
+      ctx.lineWidth = 4;
+      ctx.strokeStyle = "rgba(0, 0, 0, 0.78)";
+      ctx.strokeText(`#${entry.rank}`, listX + 22, y + 22);
+    }
+
     ctx.fillText(`#${entry.rank}`, listX + 22, y + 22);
 
     ctx.fillStyle = isActive ? "#ffffff" : "rgba(255, 255, 255, 0.78)";
@@ -852,7 +915,7 @@ async function createTransparentOverlayPng() {
   return canvasToPngBytes(canvas);
 }
 
-async function createRankRevealPng(rank: number) {
+async function createRankRevealPng(rank: number, accentColor: AccentColor) {
   const canvas = document.createElement("canvas");
   canvas.width = OUTPUT_WIDTH;
   canvas.height = OUTPUT_HEIGHT;
@@ -875,14 +938,18 @@ async function createRankRevealPng(rank: number) {
   ctx.font = '900 330px "Arial Black", Impact, sans-serif';
   ctx.lineWidth = 22;
   ctx.strokeStyle = "rgba(0, 0, 0, 0.88)";
-  ctx.fillStyle = "#39ff88";
+  ctx.fillStyle = accentColor.hex;
   ctx.strokeText(`#${rank}`, OUTPUT_WIDTH / 2, 820);
   ctx.fillText(`#${rank}`, OUTPUT_WIDTH / 2, 820);
 
   return canvasToPngBytes(canvas);
 }
 
-async function createHookOverlayPng(title: string, teaser: HookTeaserLines) {
+async function createHookOverlayPng(
+  title: string,
+  teaser: HookTeaserLines,
+  accentColor: AccentColor
+) {
   const canvas = document.createElement("canvas");
   canvas.width = OUTPUT_WIDTH;
   canvas.height = OUTPUT_HEIGHT;
@@ -910,6 +977,7 @@ async function createHookOverlayPng(title: string, teaser: HookTeaserLines) {
   const titleLines = wrapTextFully(ctx, title, 910);
   const titleFont = titleFontForLineCount(titleLines.length);
   ctx.font = `800 ${titleFont.size}px "Arial", sans-serif`;
+  ctx.fillStyle = accentColor.hex;
   titleLines.forEach((line, index) => {
     const y = titleSafeY + index * titleFont.lineHeight;
     ctx.lineWidth = 8;
@@ -936,7 +1004,7 @@ async function createHookOverlayPng(title: string, teaser: HookTeaserLines) {
   const teaserTop = Math.round(1190 - ((teaserLines.length - 1) * teaserLineHeight) / 2);
 
   ctx.lineWidth = 10;
-  ctx.fillStyle = "#39ff88";
+  ctx.fillStyle = accentColor.hex;
   teaserLines.forEach((line, index) => {
     const y = teaserTop + index * teaserLineHeight;
     ctx.strokeText(line, OUTPUT_WIDTH / 2, y);
@@ -989,6 +1057,7 @@ async function cleanupDownloadedClips(sessionId: string) {
 }
 
 async function renderSegment({
+  accentColor,
   ffmpeg,
   inputName,
   overlayName,
@@ -1000,12 +1069,13 @@ async function renderSegment({
   fadeDuration,
   fadeOutStart
 }: {
+  accentColor: AccentColor;
   ffmpeg: FFmpeg;
   inputName: string;
   overlayName: string;
   revealName: string;
   segmentName: string;
-  sfxName: string;
+  sfxName?: string | null;
   startTimeText: string;
   durationText: string;
   fadeDuration: number;
@@ -1015,11 +1085,22 @@ async function renderSegment({
   const progressDuration = (Number.isFinite(safeClipDuration) ? Math.max(0.1, safeClipDuration) : 0.1).toFixed(2);
   const progressOverlayX = `max(-w\\,min(0\\,-w+w*t/${progressDuration}))`;
   const progressY = OUTPUT_HEIGHT - 22;
-  const videoFilter = `color=c=0x39ff88@0.95:s=${OUTPUT_WIDTH}x18:r=30:d=${durationText},format=rgba[progressBar];[0:v]setpts=PTS-STARTPTS,scale=${OUTPUT_WIDTH}:${OUTPUT_HEIGHT}:force_original_aspect_ratio=increase,crop=${OUTPUT_WIDTH}:${OUTPUT_HEIGHT},setsar=1,format=rgba[base];[base][1:v]overlay=0:0:format=auto[withOverlay];[2:v]format=rgba,fade=t=out:st=0.48:d=0.32:alpha=1[rankReveal];[withOverlay][rankReveal]overlay=0:0:format=auto:enable='between(t\\,0\\,0.80)',format=yuv420p,drawbox=x=0:y=${progressY}:w=iw:h=18:color=white@0.18:t=fill[progressBase];[progressBase][progressBar]overlay=x='${progressOverlayX}':y=${progressY}:format=auto,format=yuv420p,fade=t=in:st=0:d=${fadeDuration},fade=t=out:st=${fadeOutStart}:d=${fadeDuration}[v]`;
+  const blackTransitionFilter = sfxName
+    ? `,drawbox=x=0:y=0:w=iw:h=ih:color=black@1:t=fill:enable='between(t\\,0\\,${TRANSITION_SFX_SECONDS})'`
+    : "";
+  const videoFilter = `color=c=${accentColor.ffmpeg}@0.95:s=${OUTPUT_WIDTH}x18:r=30:d=${durationText},format=rgba[progressBar];[0:v]setpts=PTS-STARTPTS,scale=${OUTPUT_WIDTH}:${OUTPUT_HEIGHT}:force_original_aspect_ratio=increase,crop=${OUTPUT_WIDTH}:${OUTPUT_HEIGHT},setsar=1,format=rgba[base];[base][1:v]overlay=0:0:format=auto[withOverlay];[2:v]format=rgba,fade=t=out:st=0.48:d=0.32:alpha=1[rankReveal];[withOverlay][rankReveal]overlay=0:0:format=auto:enable='between(t\\,0\\,0.80)',format=yuv420p,drawbox=x=0:y=${progressY}:w=iw:h=18:color=white@0.18:t=fill[progressBase];[progressBase][progressBar]overlay=x='${progressOverlayX}':y=${progressY}:format=auto,format=yuv420p${blackTransitionFilter},fade=t=in:st=0:d=${fadeDuration},fade=t=out:st=${fadeOutStart}:d=${fadeDuration}[v]`;
   const sourceAudioFilter = `[0:a]atrim=0:${durationText},asetpts=PTS-STARTPTS,apad=pad_dur=${durationText},atrim=0:${durationText},aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo[clipa]`;
-  const sfxAudioFilter = `[3:a]atrim=0:${durationText},asetpts=PTS-STARTPTS,apad=pad_dur=${durationText},atrim=0:${durationText},volume=0.52,aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo[sfx]`;
-  const mixedAudioFilter = "[clipa][sfx]amix=inputs=2:duration=first:dropout_transition=0,volume=1.05[a]";
-  const silentAudioFilter = `[4:a]atrim=0:${durationText},asetpts=PTS-STARTPTS,aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo[clipa]`;
+  const sfxAudioFilter = sfxName
+    ? `[3:a]atrim=0:${durationText},asetpts=PTS-STARTPTS,apad=pad_dur=${durationText},atrim=0:${durationText},volume=1.35,aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo[sfx]`
+    : "";
+  const mixedAudioFilter = sfxName
+    ? "[clipa][sfx]amix=inputs=2:duration=first:dropout_transition=0,volume=1.05[a]"
+    : "[clipa]volume=1[a]";
+  const silentInputIndex = sfxName ? 4 : 3;
+  const silentAudioFilter = `[${silentInputIndex}:a]atrim=0:${durationText},asetpts=PTS-STARTPTS,aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo[clipa]`;
+  const sfxInputs = sfxName ? ["-i", sfxName] : [];
+  const audioFilters = [sourceAudioFilter, sfxAudioFilter, mixedAudioFilter].filter(Boolean).join(";");
+  const silentAudioFilters = [silentAudioFilter, sfxAudioFilter, mixedAudioFilter].filter(Boolean).join(";");
   const outputSettings = [
     "-map",
     "[v]",
@@ -1063,12 +1144,11 @@ async function renderSegment({
       "1",
       "-i",
       revealName,
-      "-i",
-      sfxName,
+      ...sfxInputs,
       "-t",
       durationText,
       "-filter_complex",
-      `${videoFilter};${sourceAudioFilter};${sfxAudioFilter};${mixedAudioFilter}`,
+      `${videoFilter};${audioFilters}`,
       ...outputSettings
     ]);
   } catch {
@@ -1088,8 +1168,7 @@ async function renderSegment({
       "1",
       "-i",
       revealName,
-      "-i",
-      sfxName,
+      ...sfxInputs,
       "-f",
       "lavfi",
       "-t",
@@ -1099,7 +1178,7 @@ async function renderSegment({
       "-t",
       durationText,
       "-filter_complex",
-      `${videoFilter};${silentAudioFilter};${sfxAudioFilter};${mixedAudioFilter}`,
+      `${videoFilter};${silentAudioFilters}`,
       ...outputSettings
     ]);
   }
@@ -1741,7 +1820,8 @@ export default function Home() {
       const hookEntry = bestHookEntry(resolvedEntries);
       const rankedClipPlans = new Map<number, ClipPlan>();
       const teaser = hookTeaserLines(activeTitle);
-      const sfxName = "impact-sfx.wav";
+      const accentColor = randomAccentColor();
+      const sfxName = "transition-boom.mp3";
       const blankRevealName = "rank-reveal-blank.png";
 
       if (!hookEntry?.file) {
@@ -1772,20 +1852,24 @@ export default function Home() {
       const hookFadeDuration = Math.min(0.25, hookPlan.duration / 4);
       const hookFadeOutStart = Math.max(hookPlan.duration - hookFadeDuration, 0).toFixed(2);
 
-      await ffmpeg.writeFile(sfxName, createImpactSfxWavBytes());
+      await ffmpeg.writeFile(sfxName, await fetchFile("/api/sfx/boom"));
       await ffmpeg.writeFile(blankRevealName, await createTransparentOverlayPng());
       await ffmpeg.writeFile(hookInputName, await fetchFile(hookEntry.file));
-      await ffmpeg.writeFile(hookOverlayName, await createHookOverlayPng(activeTitle, teaser));
+      await ffmpeg.writeFile(
+        hookOverlayName,
+        await createHookOverlayPng(activeTitle, teaser, accentColor)
+      );
 
       setStatusText("Rendering opening hook...");
 
       await renderSegment({
+        accentColor,
         ffmpeg,
         inputName: hookInputName,
         overlayName: hookOverlayName,
         revealName: blankRevealName,
         segmentName: hookSegmentName,
-        sfxName,
+        sfxName: null,
         startTimeText: hookStartTimeText,
         durationText: hookDurationText,
         fadeDuration: hookFadeDuration,
@@ -1821,14 +1905,15 @@ export default function Home() {
         await ffmpeg.writeFile(inputName, await fetchFile(entry.file));
         await ffmpeg.writeFile(
           overlayName,
-          await createOverlayPng(activeTitle, entry, orderedResolvedEntries)
+          await createOverlayPng(activeTitle, entry, orderedResolvedEntries, accentColor)
         );
-        await ffmpeg.writeFile(revealName, await createRankRevealPng(entry.rank));
+        await ffmpeg.writeFile(revealName, await createRankRevealPng(entry.rank, accentColor));
 
         // FFmpeg trims each clip, scales/crops it into a 1080x1920 canvas, adds
         // transition fades, overlays the rank/list PNGs, adds progress/SFX, and
         // keeps normalized source audio.
         await renderSegment({
+          accentColor,
           ffmpeg,
           inputName,
           overlayName,
