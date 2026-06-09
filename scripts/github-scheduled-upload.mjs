@@ -6,7 +6,6 @@ import { extname, join, resolve } from "node:path";
 import { Readable } from "node:stream";
 import { promisify } from "node:util";
 import { execFile } from "node:child_process";
-import { create as createYoutubeDl } from "youtube-dl-exec";
 
 const execFileAsync = promisify(execFile);
 
@@ -33,16 +32,6 @@ const MEDAL_ROW_BACKGROUNDS = {
   2: { ffmpeg: "0xd7dde8" },
   3: { ffmpeg: "0xc87932" }
 };
-
-const youtubeDl = createYoutubeDl(
-  resolve(
-    process.cwd(),
-    "node_modules",
-    "youtube-dl-exec",
-    "bin",
-    process.platform === "win32" ? "yt-dlp.exe" : "yt-dlp"
-  )
-);
 
 function normalizeDailyTimeToken(token) {
   const compact = token.trim().toLowerCase().replace(/\s+/g, "");
@@ -454,22 +443,87 @@ async function findViralIdea() {
   return payload;
 }
 
-async function downloadTikTokClip(candidate, workDir, rank) {
-  const outputTemplate = join(workDir, `rank-${rank}.%(ext)s`);
+function isCloudflareChallenge(value) {
+  const lower = String(value || "").toLowerCase();
+  return (
+    lower.includes("just a moment") ||
+    lower.includes("challenges.cloudflare.com") ||
+    lower.includes("cf-chl") ||
+    lower.includes("cloudflare")
+  );
+}
 
-  await youtubeDl(candidate.url, {
-    output: outputTemplate,
-    format: "best[ext=mp4]/best",
-    noPlaylist: true,
-    noWarnings: true,
-    noCheckCertificates: true,
-    forceOverwrites: true,
-    windowsFilenames: true,
-    socketTimeout: 30,
-    retries: 2,
-    userAgent:
-      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125 Safari/537.36"
+function normalizeMediaUrl(value) {
+  if (value.startsWith("//")) {
+    return `https:${value}`;
+  }
+
+  return value;
+}
+
+async function resolveTikWMDownloadUrl(tiktokUrl) {
+  const apiUrl = new URL("https://www.tikwm.com/api/");
+  apiUrl.searchParams.set("url", tiktokUrl);
+  apiUrl.searchParams.set("hd", "1");
+
+  const response = await fetch(apiUrl, {
+    headers: {
+      Accept: "application/json",
+      "User-Agent":
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125 Safari/537.36"
+    }
   });
+  const text = await response.text();
+
+  if (!response.ok || isCloudflareChallenge(text)) {
+    throw new Error(
+      `TikWM direct download is currently unavailable${response.status ? ` (HTTP ${response.status})` : ""}.`
+    );
+  }
+
+  let payload;
+
+  try {
+    payload = JSON.parse(text);
+  } catch {
+    throw new Error("TikWM returned a non-JSON download response.");
+  }
+
+  const mediaUrl = payload?.data?.hdplay || payload?.data?.play || payload?.data?.wmplay;
+
+  if (payload?.code !== 0 || !mediaUrl) {
+    throw new Error(payload?.msg || "TikWM could not resolve this TikTok link.");
+  }
+
+  return normalizeMediaUrl(mediaUrl);
+}
+
+async function downloadMediaToFile(mediaUrl, outputPath) {
+  const response = await fetch(mediaUrl, {
+    headers: {
+      Referer: "https://www.tikwm.com/",
+      "User-Agent":
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125 Safari/537.36"
+    }
+  });
+
+  if (!response.ok) {
+    throw new Error(`Resolved TikTok media could not be downloaded (HTTP ${response.status}).`);
+  }
+
+  const bytes = Buffer.from(await response.arrayBuffer());
+
+  if (!bytes.length) {
+    throw new Error("Resolved TikTok media was empty.");
+  }
+
+  await writeFile(outputPath, bytes);
+}
+
+async function downloadTikTokClip(candidate, workDir, rank) {
+  const outputPath = join(workDir, `rank-${rank}.mp4`);
+  const mediaUrl = await resolveTikWMDownloadUrl(candidate.url);
+  await downloadMediaToFile(mediaUrl, outputPath);
 
   const files = await readdir(workDir);
   const fileName = files.find((file) => file.startsWith(`rank-${rank}.`));

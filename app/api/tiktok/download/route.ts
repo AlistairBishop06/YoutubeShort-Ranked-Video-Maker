@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { join, resolve } from "node:path";
-import { create as createYoutubeDl } from "youtube-dl-exec";
+import { join } from "node:path";
+import { writeFile } from "node:fs/promises";
 import {
   assertSafeId,
   createSafeId,
@@ -12,15 +12,16 @@ import {
 export const runtime = "nodejs";
 export const maxDuration = 120;
 
-const youtubeDl = createYoutubeDl(
-  resolve(
-    process.cwd(),
-    "node_modules",
-    "youtube-dl-exec",
-    "bin",
-    process.platform === "win32" ? "yt-dlp.exe" : "yt-dlp"
-  )
-);
+type TikWMDownloadResponse = {
+  code?: number;
+  msg?: string;
+  data?: {
+    play?: string;
+    hdplay?: string;
+    wmplay?: string;
+    title?: string;
+  };
+};
 
 function isValidTikTokUrl(value: string) {
   try {
@@ -38,19 +39,92 @@ function isValidTikTokUrl(value: string) {
   }
 }
 
+function isCloudflareChallenge(value: string) {
+  const lower = value.toLowerCase();
+  return (
+    lower.includes("just a moment") ||
+    lower.includes("challenges.cloudflare.com") ||
+    lower.includes("cf-chl") ||
+    lower.includes("cloudflare")
+  );
+}
+
+function normalizeMediaUrl(value: string) {
+  if (value.startsWith("//")) {
+    return `https:${value}`;
+  }
+
+  return value;
+}
+
+async function resolveTikWMDownloadUrl(tiktokUrl: string) {
+  const apiUrl = new URL("https://www.tikwm.com/api/");
+  apiUrl.searchParams.set("url", tiktokUrl);
+  apiUrl.searchParams.set("hd", "1");
+
+  const response = await fetch(apiUrl, {
+    headers: {
+      Accept: "application/json",
+      "User-Agent":
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125 Safari/537.36"
+    }
+  });
+  const text = await response.text();
+
+  if (!response.ok || isCloudflareChallenge(text)) {
+    throw new Error(
+      `TikWM direct download is currently unavailable${response.status ? ` (HTTP ${response.status})` : ""}.`
+    );
+  }
+
+  let payload: TikWMDownloadResponse;
+
+  try {
+    payload = JSON.parse(text) as TikWMDownloadResponse;
+  } catch {
+    throw new Error("TikWM returned a non-JSON download response.");
+  }
+
+  const mediaUrl = payload.data?.hdplay || payload.data?.play || payload.data?.wmplay;
+
+  if (payload.code !== 0 || !mediaUrl) {
+    throw new Error(payload.msg || "TikWM could not resolve this TikTok link.");
+  }
+
+  return normalizeMediaUrl(mediaUrl);
+}
+
+async function downloadMediaToFile(mediaUrl: string, outputPath: string) {
+  const response = await fetch(mediaUrl, {
+    headers: {
+      Referer: "https://www.tikwm.com/",
+      "User-Agent":
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125 Safari/537.36"
+    }
+  });
+
+  if (!response.ok) {
+    throw new Error(`Resolved TikTok media could not be downloaded (HTTP ${response.status}).`);
+  }
+
+  const bytes = Buffer.from(await response.arrayBuffer());
+
+  if (!bytes.length) {
+    throw new Error("Resolved TikTok media was empty.");
+  }
+
+  await writeFile(outputPath, bytes);
+}
+
 function downloaderErrorMessage(error: unknown) {
   if (!(error instanceof Error)) {
     return "TikTok download failed.";
   }
 
-  const details = error as Error & { stderr?: string; stdout?: string; code?: string };
-  const message = [error.message, details.stderr, details.stdout, details.code]
-    .filter(Boolean)
-    .join("\n")
-    .trim();
+  const message = error.message.trim();
 
   if (!message) {
-    return "TikTok download failed before yt-dlp returned details.";
+    return "TikTok download failed before the server returned details.";
   }
 
   if (
@@ -63,8 +137,8 @@ function downloaderErrorMessage(error: unknown) {
     return "TikTok download failed. The link may be private, region-blocked, age-gated, or protected by TikTok.";
   }
 
-  if (message.includes("ENOENT")) {
-    return "Could not find the bundled yt-dlp downloader binary.";
+  if (message.includes("TikWM direct download is currently unavailable")) {
+    return "TikTok download is temporarily unavailable because TikWM is blocked or rate-limited. Try again later or upload the clip manually.";
   }
 
   return message;
@@ -85,24 +159,13 @@ export async function POST(request: NextRequest) {
     newSessionIdForFailureCleanup = body.sessionId ? null : sessionId;
     const clipId = createSafeId();
     const sessionDir = await ensureSessionDir(sessionId);
-    const outputTemplate = join(sessionDir, `${clipId}.%(ext)s`);
+    const outputPath = join(sessionDir, `${clipId}.mp4`);
 
     // Server-side TikTok pulling is intentionally isolated from browser FFmpeg:
-    // yt-dlp writes a short-lived source clip into the OS temp directory, then
-    // the client fetches it as a blob and asks cleanup to delete it after export.
-    await youtubeDl(url, {
-      output: outputTemplate,
-      format: "best[ext=mp4]/best",
-      noPlaylist: true,
-      noWarnings: true,
-      noCheckCertificates: true,
-      forceOverwrites: true,
-      windowsFilenames: true,
-      socketTimeout: 30,
-      retries: 2,
-      userAgent:
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125 Safari/537.36"
-    });
+    // TikWM resolves a known TikTok link to a media URL, then the server writes
+    // the short-lived MP4 into the OS temp directory for the browser to fetch.
+    const mediaUrl = await resolveTikWMDownloadUrl(url);
+    await downloadMediaToFile(mediaUrl, outputPath);
 
     const clip = await findClipPath(sessionId, clipId);
 
