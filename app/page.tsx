@@ -590,13 +590,6 @@ function titleFontForLineCount(lineCount: number) {
   return { size: 48, lineHeight: 58 };
 }
 
-function bestHookEntry(entries: RankingEntry[]) {
-  // The hook should tease the strongest moment before the countdown starts.
-  // In a ranked video, #1 is the safest default source when no separate hook
-  // candidate exists in the browser editor.
-  return [...entries].sort((a, b) => a.rank - b.rank)[0] ?? entries[0];
-}
-
 function randomItem<T>(items: T[]) {
   return items[Math.floor(Math.random() * items.length)];
 }
@@ -730,12 +723,20 @@ async function videoDurationFromFile(file: File) {
 }
 
 async function audioHighlightStartFromFile(file: File, sourceDuration: number, windowSeconds: number) {
+  const result = await audioHighlightFromFile(file, sourceDuration, windowSeconds);
+  return result.start;
+}
+
+async function audioHighlightFromFile(file: File, sourceDuration: number, windowSeconds: number) {
   const AudioContextConstructor =
     window.AudioContext ||
     (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
 
   if (!AudioContextConstructor) {
-    return Math.max(0, (sourceDuration - windowSeconds) / 2);
+    return {
+      start: Math.max(0, (sourceDuration - windowSeconds) / 2),
+      score: 0
+    };
   }
 
   const audioContext = new AudioContextConstructor();
@@ -774,9 +775,15 @@ async function audioHighlightStartFromFile(file: File, sourceDuration: number, w
       }
     }
 
-    return Math.max(0, Math.min(bestStartSample / sampleRate, sourceDuration - windowSeconds));
+    return {
+      start: Math.max(0, Math.min(bestStartSample / sampleRate, sourceDuration - windowSeconds)),
+      score: Number.isFinite(bestScore) ? bestScore : 0
+    };
   } catch {
-    return Math.max(0, (sourceDuration - windowSeconds) / 2);
+    return {
+      start: Math.max(0, (sourceDuration - windowSeconds) / 2),
+      score: 0
+    };
   } finally {
     await audioContext.close();
   }
@@ -799,6 +806,42 @@ async function browserClipPlan(entry: RankingEntry, maxDuration: number, smartHi
   const start = await audioHighlightStartFromFile(entry.file, safeSourceDuration, clipDuration);
 
   return { start, duration: clipDuration };
+}
+
+async function browserHookPlanFromLoudestEntry(entries: RankingEntry[]) {
+  let best: { entry: RankingEntry & { file: File }; plan: ClipPlan; score: number } | null = null;
+
+  for (const entry of entries) {
+    if (!entry.file) {
+      continue;
+    }
+
+    const entryWithFile = entry as RankingEntry & { file: File };
+    const measuredDuration = await videoDurationFromFile(entry.file);
+    const sourceDuration = Math.max(0.5, measuredDuration || entry.duration || HOOK_DURATION_SECONDS);
+    const duration = Math.min(HOOK_DURATION_SECONDS, sourceDuration);
+    const highlight = sourceDuration <= HOOK_DURATION_SECONDS + 0.25
+      ? { start: 0, score: 0 }
+      : await audioHighlightFromFile(entry.file, sourceDuration, duration);
+    const score = highlight.score || (sourceDuration <= HOOK_DURATION_SECONDS + 0.25 ? 0.0001 : 0);
+
+    if (!best || score > best.score) {
+      best = {
+        entry: entryWithFile,
+        plan: {
+          start: highlight.start,
+          duration
+        },
+        score
+      };
+    }
+  }
+
+  if (!best) {
+    throw new Error("Missing hook clip source.");
+  }
+
+  return best;
 }
 
 async function createOverlayPng(
@@ -1862,25 +1905,21 @@ export default function Home() {
       const ffmpeg = await getFfmpeg();
       const segmentNames: string[] = [];
       const orderedResolvedEntries = [...resolvedEntries].sort((a, b) => b.rank - a.rank);
-      const hookEntry = bestHookEntry(resolvedEntries);
       const rankedClipPlans = new Map<number, ClipPlan>();
       const teaser = hookTeaserLines(activeTitle);
       const accentColor = randomAccentColor();
       const sfxName = "transition-boom.mp3";
       const blankRevealName = "rank-reveal-blank.png";
 
-      if (!hookEntry?.file) {
-        throw new Error("Missing hook clip source.");
-      }
-
-      const hookInputName = `hook-input-${hookEntry.rank}.${fileExtension(hookEntry.file)}`;
-      const hookOverlayName = "overlay-hook.png";
-      const hookSegmentName = "segment-hook.mp4";
-
       setStatusText("Finding opening hook...");
       setProgress(20);
 
-      const hookPlan = await browserClipPlan(hookEntry, HOOK_DURATION_SECONDS, true);
+      const loudestHook = await browserHookPlanFromLoudestEntry(resolvedEntries);
+      const hookEntry = loudestHook.entry;
+      const hookPlan = loudestHook.plan;
+      const hookInputName = `hook-input-${hookEntry.rank}.${fileExtension(hookEntry.file)}`;
+      const hookOverlayName = "overlay-hook.png";
+      const hookSegmentName = "segment-hook.mp4";
 
       for (const [index, entry] of orderedResolvedEntries.entries()) {
         setStatusText(

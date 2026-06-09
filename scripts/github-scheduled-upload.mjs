@@ -565,6 +565,11 @@ async function probeDuration(inputPath) {
 }
 
 async function audioHighlightStart(inputPath, sourceDuration, windowSeconds) {
+  const result = await audioHighlight(inputPath, sourceDuration, windowSeconds);
+  return result.start;
+}
+
+async function audioHighlight(inputPath, sourceDuration, windowSeconds) {
   try {
     const { stdout } = await execFileAsync(
       "ffmpeg",
@@ -601,9 +606,15 @@ async function audioHighlightStart(inputPath, sourceDuration, windowSeconds) {
       }
     }
 
-    return Math.max(0, Math.min(bestStartSample / sampleRate, sourceDuration - windowSeconds));
+    return {
+      start: Math.max(0, Math.min(bestStartSample / sampleRate, sourceDuration - windowSeconds)),
+      score: Number.isFinite(bestScore) ? bestScore : 0
+    };
   } catch {
-    return Math.max(0, (sourceDuration - windowSeconds) / 2);
+    return {
+      start: Math.max(0, (sourceDuration - windowSeconds) / 2),
+      score: 0
+    };
   }
 }
 
@@ -628,6 +639,41 @@ async function clipPlan(inputPath, sourceDurationHint, maxDuration) {
   }
 
   return smartClipPlan(inputPath, sourceDurationHint, maxDuration);
+}
+
+async function loudestHookPlan(entries) {
+  let best = null;
+
+  for (const entry of entries) {
+    const measuredDuration = await probeDuration(entry.inputPath);
+    const sourceDuration = Math.max(
+      0.5,
+      measuredDuration || entry.sourceDuration || HOOK_DURATION_SECONDS
+    );
+    const duration = Math.min(HOOK_DURATION_SECONDS, sourceDuration);
+    const highlight =
+      sourceDuration <= HOOK_DURATION_SECONDS + 0.25
+        ? { start: 0, score: 0.0001 }
+        : await audioHighlight(entry.inputPath, sourceDuration, duration);
+    const score = highlight.score || 0;
+
+    if (!best || score > best.score) {
+      best = {
+        entry,
+        plan: {
+          start: highlight.start,
+          duration
+        },
+        score
+      };
+    }
+  }
+
+  if (!best) {
+    throw new Error("No usable clip is available for the opening hook.");
+  }
+
+  return best;
 }
 
 function drawText({ text, x, y, size, color = "white", border = 4, enable }) {
@@ -1001,38 +1047,6 @@ function concatPath(path) {
   return path.replace(/'/g, "'\\''");
 }
 
-async function resolveHookEntry({ entries, idea, workDir }) {
-  const rankedIds = new Set(entries.map((entry) => entry.id).filter(Boolean));
-  const hookCandidates = idea.candidates.filter((candidate) => !rankedIds.has(candidate.id));
-
-  for (const candidate of hookCandidates) {
-    try {
-      console.log(`Downloading hook candidate: ${candidate.url}`);
-      const inputPath = await downloadTikTokClip(candidate, workDir, "hook");
-
-      return {
-        id: candidate.id,
-        name: cleanText(candidate.name, "Opening hook"),
-        sourceDuration: candidate.duration || 0,
-        url: candidate.url,
-        inputPath
-      };
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "download failed";
-      console.warn(`Skipping hook candidate ${candidate.url}: ${message}`);
-    }
-  }
-
-  const fallback = [...entries].sort((a, b) => a.rank - b.rank)[0];
-
-  if (!fallback) {
-    throw new Error("No usable clip is available for the opening hook.");
-  }
-
-  console.log(`Using #${fallback.rank} as the opening hook source.`);
-  return fallback;
-}
-
 async function renderRankingVideo({ idea, selectedCandidates, workDir }) {
   const duration = Number(process.env.CLIP_DURATION_SECONDS || DEFAULT_DURATION_SECONDS);
   const entries = [];
@@ -1067,16 +1081,13 @@ async function renderRankingVideo({ idea, selectedCandidates, workDir }) {
 
   const orderedEntries = [...entries].sort((a, b) => b.rank - a.rank);
   const segmentPaths = [];
-  const hookEntry = await resolveHookEntry({ entries, idea, workDir });
   const rankedPlans = new Map();
   const teaser = hookTeaserLines(idea.title);
   const accentColor = randomAccentColor();
   const sfxPath = resolve(process.cwd(), "app", "assets", "sounds", "boom.mp3");
-  const hookPlan = await smartClipPlan(
-    hookEntry.inputPath,
-    hookEntry.sourceDuration,
-    HOOK_DURATION_SECONDS
-  );
+  const loudestHook = await loudestHookPlan(entries);
+  const hookEntry = loudestHook.entry;
+  const hookPlan = loudestHook.plan;
   const hookOutputPath = join(workDir, "segment-hook.mp4");
 
   for (const entry of orderedEntries) {
@@ -1085,7 +1096,7 @@ async function renderRankingVideo({ idea, selectedCandidates, workDir }) {
   }
 
   console.log(
-    `Rendering opening hook from ${hookPlan.start.toFixed(2)}s for ${hookPlan.duration.toFixed(2)}s`
+    `Rendering opening hook from #${hookEntry.rank} at ${hookPlan.start.toFixed(2)}s for ${hookPlan.duration.toFixed(2)}s`
   );
   await renderHookSegment({
     accentColor,
