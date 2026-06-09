@@ -1,8 +1,12 @@
 import { mkdir, readdir, readFile, rm, stat } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { relative } from "node:path";
 import { randomUUID } from "node:crypto";
 
-export const TEMP_ROOT = resolve(process.cwd(), ".tmp", "tiktok-clips");
+export const TEMP_ROOT = resolve(
+  process.env.TIKTOK_TEMP_ROOT || join(tmpdir(), "ytshort-tiktok-clips")
+);
 
 export function createSafeId() {
   return randomUUID().replace(/-/g, "");
@@ -18,8 +22,9 @@ export function assertSafeId(value: unknown, label: string) {
 
 export function getSessionDir(sessionId: string) {
   const dir = resolve(TEMP_ROOT, sessionId);
+  const relativePath = relative(TEMP_ROOT, dir);
 
-  if (!dir.startsWith(`${TEMP_ROOT}\\`) && dir !== TEMP_ROOT) {
+  if (relativePath.startsWith("..") || resolve(relativePath) === relativePath) {
     throw new Error("Invalid temp directory.");
   }
 
@@ -44,8 +49,9 @@ export async function findClipPath(sessionId: string, clipId: string) {
   }
 
   const clipPath = resolve(join(sessionDir, match));
+  const relativePath = relative(sessionDir, clipPath);
 
-  if (!clipPath.startsWith(`${sessionDir}\\`)) {
+  if (relativePath.startsWith("..") || resolve(relativePath) === relativePath) {
     throw new Error("Invalid clip path.");
   }
 

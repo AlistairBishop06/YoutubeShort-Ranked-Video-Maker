@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { create as createYoutubeDl } from "youtube-dl-exec";
 import {
   assertSafeId,
@@ -85,11 +85,11 @@ export async function POST(request: NextRequest) {
     newSessionIdForFailureCleanup = body.sessionId ? null : sessionId;
     const clipId = createSafeId();
     const sessionDir = await ensureSessionDir(sessionId);
-    const outputTemplate = `${sessionDir}\\${clipId}.%(ext)s`;
+    const outputTemplate = join(sessionDir, `${clipId}.%(ext)s`);
 
     // Server-side TikTok pulling is intentionally isolated from browser FFmpeg:
-    // yt-dlp writes a short-lived source clip into .tmp, then the client fetches
-    // it as a blob and asks cleanup to delete the temp folder after generation.
+    // yt-dlp writes a short-lived source clip into the OS temp directory, then
+    // the client fetches it as a blob and asks cleanup to delete it after export.
     await youtubeDl(url, {
       output: outputTemplate,
       format: "best[ext=mp4]/best",
