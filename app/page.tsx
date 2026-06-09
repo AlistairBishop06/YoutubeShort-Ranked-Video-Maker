@@ -30,14 +30,6 @@ type RankingEntry = {
 
 type FieldErrors = Record<string, string>;
 
-type DownloadedClipResponse = {
-  sessionId: string;
-  clipId: string;
-  fileName: string;
-  size: number;
-  downloadUrl: string;
-};
-
 type ViralCandidate = {
   id: string;
   url: string;
@@ -318,10 +310,6 @@ function fileExtension(file: File) {
   }
 
   return "mp4";
-}
-
-function extensionFromName(fileName: string) {
-  return fileName.split(".").pop()?.toLowerCase() || "mp4";
 }
 
 function formatMetric(value: number) {
@@ -1033,27 +1021,33 @@ async function downloadTikTokClip(entry: RankingEntry, sessionId: string | null)
     body: JSON.stringify({ url: entry.url.trim(), sessionId })
   });
 
-  const payload = (await response.json()) as Partial<DownloadedClipResponse> & {
-    error?: string;
-  };
+  if (!response.ok) {
+    const text = await response.text();
+    let message = `Could not download TikTok clip for #${entry.rank}.`;
 
-  if (!response.ok || !payload.downloadUrl || !payload.sessionId || !payload.fileName) {
-    throw new Error(payload.error ?? `Could not download TikTok clip for #${entry.rank}.`);
+    try {
+      const payload = JSON.parse(text) as { error?: string };
+      message = payload.error ?? message;
+    } catch {
+      if (text.trim()) {
+        message = text.slice(0, 220);
+      }
+    }
+
+    throw new Error(message);
   }
 
-  const clipResponse = await fetch(payload.downloadUrl);
+  const blob = await response.blob();
 
-  if (!clipResponse.ok) {
-    throw new Error(`Downloaded clip for #${entry.rank} could not be read.`);
+  if (!blob.size) {
+    throw new Error(`Downloaded clip for #${entry.rank} was empty.`);
   }
 
-  const blob = await clipResponse.blob();
-  const extension = extensionFromName(payload.fileName);
-  const file = new File([blob], `tiktok-rank-${entry.rank}.${extension}`, {
+  const file = new File([blob], `tiktok-rank-${entry.rank}.mp4`, {
     type: blob.type || "video/mp4"
   });
 
-  return { file, sessionId: payload.sessionId };
+  return { file, sessionId: null };
 }
 
 async function cleanupDownloadedClips(sessionId: string) {

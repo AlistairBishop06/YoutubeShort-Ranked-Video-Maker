@@ -259,7 +259,11 @@ const CREATOR_NAMES = [
   "aj shabeel",
   "miniminter",
   "zerkaa",
-  "vikkstar"
+  "vikkstar",
+  "W2S",
+  "WroeToShaw",
+  "Harry Lewis",
+  "Harry"
 ];
 
 const CREATOR_VARIANTS = [

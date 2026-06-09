@@ -1,13 +1,4 @@
 import { NextRequest, NextResponse } from "next/server";
-import { join } from "node:path";
-import { writeFile } from "node:fs/promises";
-import {
-  assertSafeId,
-  createSafeId,
-  deleteSession,
-  ensureSessionDir,
-  findClipPath
-} from "../_files";
 
 export const runtime = "nodejs";
 export const maxDuration = 120;
@@ -94,7 +85,7 @@ async function resolveTikWMDownloadUrl(tiktokUrl: string) {
   return normalizeMediaUrl(mediaUrl);
 }
 
-async function downloadMediaToFile(mediaUrl: string, outputPath: string) {
+async function downloadMedia(mediaUrl: string) {
   const response = await fetch(mediaUrl, {
     headers: {
       Referer: "https://www.tikwm.com/",
@@ -113,7 +104,7 @@ async function downloadMediaToFile(mediaUrl: string, outputPath: string) {
     throw new Error("Resolved TikTok media was empty.");
   }
 
-  await writeFile(outputPath, bytes);
+  return bytes;
 }
 
 function downloaderErrorMessage(error: unknown) {
@@ -145,42 +136,29 @@ function downloaderErrorMessage(error: unknown) {
 }
 
 export async function POST(request: NextRequest) {
-  let newSessionIdForFailureCleanup: string | null = null;
-
   try {
-    const body = (await request.json()) as { url?: string; sessionId?: string };
+    const body = (await request.json()) as { url?: string };
     const url = body.url?.trim() ?? "";
 
     if (!isValidTikTokUrl(url)) {
       return NextResponse.json({ error: "Enter a valid TikTok URL." }, { status: 400 });
     }
 
-    const sessionId = body.sessionId ? assertSafeId(body.sessionId, "session id") : createSafeId();
-    newSessionIdForFailureCleanup = body.sessionId ? null : sessionId;
-    const clipId = createSafeId();
-    const sessionDir = await ensureSessionDir(sessionId);
-    const outputPath = join(sessionDir, `${clipId}.mp4`);
-
     // Server-side TikTok pulling is intentionally isolated from browser FFmpeg:
-    // TikWM resolves a known TikTok link to a media URL, then the server writes
-    // the short-lived MP4 into the OS temp directory for the browser to fetch.
+    // TikWM resolves a known TikTok link to a media URL, then this route returns
+    // the MP4 bytes directly so Vercel never has to share temp files between
+    // separate serverless function invocations.
     const mediaUrl = await resolveTikWMDownloadUrl(url);
-    await downloadMediaToFile(mediaUrl, outputPath);
+    const bytes = await downloadMedia(mediaUrl);
 
-    const clip = await findClipPath(sessionId, clipId);
-
-    return NextResponse.json({
-      sessionId,
-      clipId,
-      fileName: clip.fileName,
-      size: clip.size,
-      downloadUrl: `/api/tiktok/file?sessionId=${sessionId}&clipId=${clipId}`
+    return new NextResponse(bytes, {
+      headers: {
+        "Content-Type": "video/mp4",
+        "Content-Length": String(bytes.length),
+        "Content-Disposition": 'attachment; filename="tiktok-clip.mp4"'
+      }
     });
   } catch (error) {
-    if (newSessionIdForFailureCleanup) {
-      await deleteSession(newSessionIdForFailureCleanup);
-    }
-
     const message = downloaderErrorMessage(error);
     console.error("TikTok download failed:", error);
 
