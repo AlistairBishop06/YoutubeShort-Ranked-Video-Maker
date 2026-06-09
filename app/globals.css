@@ -376,6 +376,56 @@ h2 {
   gap: 10px;
 }
 
+.manual-search-panel {
+  display: grid;
+  gap: 12px;
+  border: 1px solid rgba(255, 204, 51, 0.34);
+  border-radius: 14px;
+  background: rgba(255, 204, 51, 0.08);
+  padding: 12px;
+}
+
+.manual-search-panel strong {
+  display: block;
+  font-size: 0.94rem;
+  line-height: 1.2;
+}
+
+.manual-search-panel span {
+  display: block;
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 0.8rem;
+  font-weight: 800;
+  line-height: 1.35;
+}
+
+.manual-link-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.manual-link-grid a {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 36px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(0, 0, 0, 0.2);
+  color: var(--text);
+  font-size: 0.8rem;
+  font-weight: 900;
+  padding: 0 10px;
+  text-decoration: none;
+}
+
+.manual-link-grid a:hover {
+  border-color: rgba(255, 204, 51, 0.58);
+  background: rgba(255, 204, 51, 0.12);
+}
+
 .candidate-card {
   position: relative;
   display: grid;

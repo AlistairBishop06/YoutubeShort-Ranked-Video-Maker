@@ -37,6 +37,36 @@ type Candidate = {
   score: number;
 };
 
+type CachedIdea = {
+  topic: string;
+  key: string;
+  candidates: Candidate[];
+  cachedAt: number;
+};
+
+type TikWMCooldown = {
+  blockedUntil: number;
+  reason: string;
+  status: number;
+};
+
+type SearchAttempt = {
+  query: string;
+  count: number;
+  error?: string;
+  source?: string;
+};
+
+class TikWMBlockedError extends Error {
+  status: number;
+
+  constructor(status: number, message: string) {
+    super(message);
+    this.name = "TikWMBlockedError";
+    this.status = status;
+  }
+}
+
 const FALLBACK_IDEAS = [
   "sidemen funny moments",
   "sidemen irl moments",
@@ -197,16 +227,22 @@ const GENERAL_VARIANT_TOPICS = [
   "viral creator crashout"
 ];
 
+const RANK_COUNT = 5;
 const RECENT_TOPIC_LIMIT = 18;
 const RECENT_CANDIDATE_LIMIT = 120;
-const SEARCH_BATCH_SIZE = 6;
-const MAX_SEARCH_ATTEMPTS = 42;
-const SEARCH_CANDIDATE_COUNT = 30;
+const MAX_SEARCH_ATTEMPTS = 6;
+const SEARCH_CANDIDATE_COUNT = 18;
+const SEARCH_REQUEST_DELAY_MS = 1400;
+const TIKWM_COOLDOWN_MS = 60 * 60 * 1000;
+const IDEA_CACHE_LIMIT = 48;
+const IDEA_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 const PREFERRED_MAX_SOURCE_SECONDS = 60;
 const HARD_MAX_SOURCE_SECONDS = 90;
 const recentTopics = globalThis as typeof globalThis & {
   __ytshortRecentIdeaTopics?: Array<{ topic: string; key: string }>;
   __ytshortRecentCandidateIds?: string[];
+  __ytshortIdeaCandidateCache?: CachedIdea[];
+  __ytshortTikWMCooldown?: TikWMCooldown;
 };
 
 const REJECT_SOURCE_PATTERNS = [
@@ -658,6 +694,12 @@ function shuffle<T>(items: T[]) {
   return shuffled;
 }
 
+function delay(milliseconds: number) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, milliseconds);
+  });
+}
+
 function getRecentTopics() {
   recentTopics.__ytshortRecentIdeaTopics ??= [];
   return recentTopics.__ytshortRecentIdeaTopics;
@@ -666,6 +708,51 @@ function getRecentTopics() {
 function getRecentCandidateIds() {
   recentTopics.__ytshortRecentCandidateIds ??= [];
   return recentTopics.__ytshortRecentCandidateIds;
+}
+
+function getIdeaCache() {
+  const now = Date.now();
+  recentTopics.__ytshortIdeaCandidateCache = (recentTopics.__ytshortIdeaCandidateCache ?? [])
+    .filter((item) => now - item.cachedAt <= IDEA_CACHE_TTL_MS && item.candidates.length >= RANK_COUNT)
+    .slice(0, IDEA_CACHE_LIMIT);
+
+  return recentTopics.__ytshortIdeaCandidateCache;
+}
+
+function rememberIdeaCache(topic: string, candidates: Candidate[]) {
+  if (candidates.length < RANK_COUNT) {
+    return;
+  }
+
+  const key = topicKey(topic);
+  const cache = getIdeaCache().filter((item) => item.key !== key);
+  cache.unshift({
+    topic,
+    key,
+    candidates: candidates.slice(0, 24),
+    cachedAt: Date.now()
+  });
+  recentTopics.__ytshortIdeaCandidateCache = cache.slice(0, IDEA_CACHE_LIMIT);
+}
+
+function activeTikWMCooldown() {
+  const cooldown = recentTopics.__ytshortTikWMCooldown;
+
+  if (!cooldown || cooldown.blockedUntil <= Date.now()) {
+    return null;
+  }
+
+  return cooldown;
+}
+
+function startTikWMCooldown(error: TikWMBlockedError) {
+  const cooldown: TikWMCooldown = {
+    blockedUntil: Date.now() + TIKWM_COOLDOWN_MS,
+    reason: error.message,
+    status: error.status
+  };
+  recentTopics.__ytshortTikWMCooldown = cooldown;
+  return cooldown;
 }
 
 function rememberTopic(topic: string) {
@@ -681,6 +768,16 @@ function rememberCandidateIds(ids: string[]) {
   recentTopics.__ytshortRecentCandidateIds = recent.slice(0, RECENT_CANDIDATE_LIMIT);
 }
 
+function isCloudflareChallenge(value: string) {
+  const lower = value.toLowerCase();
+  return (
+    lower.includes("just a moment") ||
+    lower.includes("challenges.cloudflare.com") ||
+    lower.includes("cf-chl") ||
+    lower.includes("cloudflare")
+  );
+}
+
 async function searchTikWMCandidates(query: string, cursor = 0) {
   const url = new URL("https://www.tikwm.com/api/feed/search");
   url.searchParams.set("keywords", query);
@@ -690,15 +787,36 @@ async function searchTikWMCandidates(query: string, cursor = 0) {
   const response = await fetch(url, {
     headers: { "User-Agent": "Mozilla/5.0", Accept: "application/json" }
   });
+  const responseText = await response.text();
 
   if (!response.ok) {
+    if (response.status === 403 || response.status === 429 || isCloudflareChallenge(responseText)) {
+      throw new TikWMBlockedError(
+        response.status,
+        `TikWM blocked search with HTTP ${response.status}. Cooling down before trying again.`
+      );
+    }
+
     return [];
   }
 
-  const payload = (await response.json()) as {
+  if (isCloudflareChallenge(responseText)) {
+    throw new TikWMBlockedError(
+      response.status,
+      "TikWM returned a Cloudflare challenge. Cooling down before trying again."
+    );
+  }
+
+  let payload: {
     code?: number;
     data?: { videos?: TikWMVideo[] };
   };
+
+  try {
+    payload = JSON.parse(responseText) as typeof payload;
+  } catch {
+    return [];
+  }
 
   if (payload.code !== 0 || !Array.isArray(payload.data?.videos)) {
     return [];
@@ -740,24 +858,23 @@ async function searchTikWMCandidates(query: string, cursor = 0) {
 }
 
 async function searchVariedCandidates(query: string) {
+  const primaryCandidates = await searchTikWMCandidates(query, 0);
+
+  if (primaryCandidates.length >= 8) {
+    return uniqueCandidates(primaryCandidates);
+  }
+
+  await delay(SEARCH_REQUEST_DELAY_MS);
+
   const relatedQuery = shuffle([
     `${query} clips`,
     `${query} tiktok`,
     `${query} viral`,
     `${query} best moments`
   ])[0];
-  const cursor = shuffle([0, 12, 24])[0];
-  const results = await Promise.allSettled(
-    [
-      searchTikWMCandidates(query, 0),
-      cursor === 0 ? Promise.resolve([]) : searchTikWMCandidates(query, cursor),
-      searchTikWMCandidates(relatedQuery, 0)
-    ]
-  );
+  const relatedCandidates = await searchTikWMCandidates(relatedQuery, 0);
 
-  return uniqueCandidates(
-    results.flatMap((result) => (result.status === "fulfilled" ? result.value : []))
-  );
+  return uniqueCandidates([...primaryCandidates, ...relatedCandidates]);
 }
 
 function uniqueCandidates(candidates: Candidate[]) {
@@ -829,6 +946,31 @@ function rotateCandidates(candidates: Candidate[], excludedIds: Set<string>) {
     .map(({ candidate }) => candidate);
 
   return [...selected, ...filler];
+}
+
+function cachedIdeaForSearch(orderedIdeas: string[], excludedIds: Set<string>, recentKeys: Set<string>) {
+  const orderedKeys = new Set(orderedIdeas.map(topicKey));
+  const candidates = shuffle(getIdeaCache())
+    .filter((item) => orderedKeys.has(item.key))
+    .sort((a, b) => {
+      const aRecentPenalty = recentKeys.has(a.key) ? 1 : 0;
+      const bRecentPenalty = recentKeys.has(b.key) ? 1 : 0;
+      return aRecentPenalty - bRecentPenalty;
+    });
+
+  for (const cachedIdea of candidates) {
+    const rotated = rotateCandidates(cachedIdea.candidates, excludedIds);
+
+    if (rotated.length >= RANK_COUNT) {
+      return {
+        idea: cachedIdea.topic,
+        candidates: rotated,
+        isTrend: false
+      };
+    }
+  }
+
+  return null;
 }
 
 function buildHashtags(topic: string, candidates: Candidate[]) {
@@ -983,6 +1125,56 @@ function buildViralDescription(title: string, topic: string, candidates: Candida
   };
 }
 
+function manualSearchLinks(topic: string) {
+  const queries = [
+    topic,
+    `${topic} clips`,
+    `${topic} tiktok`,
+    `${topic} viral`,
+    `${topic} best moments`
+  ];
+
+  return [...new Set(queries.map(cleanTopic).filter(Boolean))].slice(0, 5).map((query) => ({
+    label: titleCase(query),
+    query,
+    url: `https://www.tiktok.com/search?q=${encodeURIComponent(query)}`
+  }));
+}
+
+function manualFallbackIdea({
+  attempts,
+  cooldown,
+  reason,
+  topic
+}: {
+  attempts: SearchAttempt[];
+  cooldown?: TikWMCooldown | null;
+  reason: string;
+  topic: string;
+}) {
+  const title = generatedViralTitle(topic);
+  const { description, hashtags } = buildViralDescription(title, topic, []);
+
+  return {
+    topic,
+    title,
+    source: cooldown
+      ? "Manual fallback - TikWM cooldown active"
+      : "Manual fallback - TikWM search unavailable",
+    description,
+    hashtags,
+    candidates: [],
+    manualSearchLinks: manualSearchLinks(topic),
+    rateLimited: Boolean(cooldown),
+    cooldownUntil: cooldown ? new Date(cooldown.blockedUntil).toISOString() : null,
+    searchLimited: true,
+    message: reason,
+    attempts,
+    recentTopics: getRecentTopics().map((recentTopic) => recentTopic.topic),
+    generatedAt: new Date().toISOString()
+  };
+}
+
 export async function POST(request: NextRequest) {
   const body = (await request.json().catch(() => ({}))) as { excludeIds?: string[] };
   const excludedIds = new Set([
@@ -996,41 +1188,77 @@ export async function POST(request: NextRequest) {
   const nonRecentIdeas = ideas.filter((idea) => !recentKeys.has(topicKey(idea)));
   const recentIdeas = ideas.filter((idea) => recentKeys.has(topicKey(idea)));
   const orderedIdeas = [...nonRecentIdeas, ...recentIdeas].slice(0, MAX_SEARCH_ATTEMPTS);
-  const attempts: Array<{ query: string; count: number }> = [];
+  const fallbackTopic = orderedIdeas[0] ?? FALLBACK_IDEAS[Math.floor(Math.random() * FALLBACK_IDEAS.length)];
+  const attempts: SearchAttempt[] = [];
+  const cachedIdea = cachedIdeaForSearch(orderedIdeas, excludedIds, recentKeys);
   const viableIdeas: Array<{
     idea: string;
     candidates: Candidate[];
     isTrend: boolean;
+    cacheHit?: boolean;
   }> = [];
 
-  for (let index = 0; index < orderedIdeas.length; index += SEARCH_BATCH_SIZE) {
-    const batch = orderedIdeas.slice(index, index + SEARCH_BATCH_SIZE);
-    const batchResults = await Promise.allSettled(
-      batch.map(async (idea) => ({
-        idea,
-        candidates: rotateCandidates(await searchVariedCandidates(idea), excludedIds)
-      }))
+  if (cachedIdea) {
+    viableIdeas.push({ ...cachedIdea, cacheHit: true });
+  }
+
+  const cooldown = activeTikWMCooldown();
+
+  if (!viableIdeas.length && cooldown) {
+    return NextResponse.json(
+      manualFallbackIdea({
+        attempts,
+        cooldown,
+        reason: `${cooldown.reason} Try again after the cooldown, or use the manual search links below.`,
+        topic: fallbackTopic
+      })
     );
+  }
 
-    for (const result of batchResults) {
-      if (result.status === "rejected") {
-        continue;
-      }
+  if (!viableIdeas.length) {
+    for (const idea of orderedIdeas) {
+      try {
+        const candidates = rotateCandidates(await searchVariedCandidates(idea), excludedIds);
+        attempts.push({ query: idea, count: candidates.length, source: "tikwm" });
 
-      const { idea, candidates } = result.value;
-      attempts.push({ query: idea, count: candidates.length });
+        if (candidates.length >= RANK_COUNT) {
+          rememberIdeaCache(idea, candidates);
+          viableIdeas.push({
+            idea,
+            candidates,
+            isTrend: trendingTerms.includes(idea)
+          });
+          break;
+        }
+      } catch (error) {
+        if (error instanceof TikWMBlockedError) {
+          const nextCooldown = startTikWMCooldown(error);
+          attempts.push({
+            query: idea,
+            count: 0,
+            error: error.message,
+            source: "tikwm"
+          });
 
-      if (candidates.length >= 5) {
-        viableIdeas.push({
-          idea,
-          candidates,
-          isTrend: trendingTerms.includes(idea)
+          return NextResponse.json(
+            manualFallbackIdea({
+              attempts,
+              cooldown: nextCooldown,
+              reason: `${error.message} Automated TikTok search is paused to avoid repeated rate-limit hits.`,
+              topic: idea
+            })
+          );
+        }
+
+        attempts.push({
+          query: idea,
+          count: 0,
+          error: error instanceof Error ? error.message : "Search failed.",
+          source: "tikwm"
         });
       }
-    }
 
-    if (viableIdeas.some(({ idea }) => !recentKeys.has(topicKey(idea)))) {
-      break;
+      await delay(SEARCH_REQUEST_DELAY_MS);
     }
   }
 
@@ -1054,10 +1282,18 @@ export async function POST(request: NextRequest) {
       title,
       source: selectedIdea.isTrend
         ? "Google Trends + TikWM search"
-        : "Viral topic fallback + TikWM search",
+        : selectedIdea.cacheHit
+          ? "Cached TikTok candidates"
+          : "Viral topic fallback + TikWM search",
       description,
       hashtags,
       candidates: selectedIdea.candidates.slice(0, 12),
+      cacheHit: Boolean(selectedIdea.cacheHit),
+      manualSearchLinks: manualSearchLinks(selectedIdea.idea),
+      rateLimited: false,
+      cooldownUntil: activeTikWMCooldown()
+        ? new Date(activeTikWMCooldown()!.blockedUntil).toISOString()
+        : null,
       attempts,
       recentTopics: getRecentTopics().map((recentTopic) => recentTopic.topic),
       generatedAt: new Date().toISOString()
@@ -1065,10 +1301,12 @@ export async function POST(request: NextRequest) {
   }
 
   return NextResponse.json(
-    {
-      error: "Could not find five downloadable TikTok candidates for the current topic set.",
-      attempts
-    },
-    { status: 502 }
+    manualFallbackIdea({
+      attempts,
+      cooldown: null,
+      reason:
+        "TikWM did not return five usable candidates within the safe search limit. Use the manual search links below instead of retrying repeatedly.",
+      topic: fallbackTopic
+    })
   );
 }

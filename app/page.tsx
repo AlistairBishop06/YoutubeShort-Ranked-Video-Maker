@@ -53,6 +53,12 @@ type ViralCandidate = {
   score: number;
 };
 
+type ManualSearchLink = {
+  label: string;
+  query: string;
+  url: string;
+};
+
 type ViralIdea = {
   topic: string;
   title: string;
@@ -60,6 +66,12 @@ type ViralIdea = {
   description: string;
   hashtags: string[];
   candidates: ViralCandidate[];
+  manualSearchLinks?: ManualSearchLink[];
+  rateLimited?: boolean;
+  cooldownUntil?: string | null;
+  searchLimited?: boolean;
+  message?: string;
+  cacheHit?: boolean;
   generatedAt: string;
 };
 
@@ -1527,7 +1539,20 @@ export default function Home() {
     setViralIdea(nextIdea);
     setSelectedCandidateIds(nextSelectedIds);
     setCopiedDescription(false);
-    applyCandidates(nextIdea.candidates.slice(0, RANK_COUNT), nextIdea.title);
+
+    if (nextIdea.candidates.length >= RANK_COUNT) {
+      applyCandidates(nextIdea.candidates.slice(0, RANK_COUNT), nextIdea.title);
+      return;
+    }
+
+    setTitle(nextIdea.title);
+    setErrors((current) => ({
+      ...current,
+      idea:
+        nextIdea.message ??
+        "Automated TikTok search is unavailable. Open the manual search links and paste selected TikTok URLs into the editor."
+    }));
+    setStatusText(nextIdea.rateLimited ? "TikWM cooling down" : "Manual idea ready");
   }
 
   async function findViralIdea() {
@@ -2182,7 +2207,35 @@ export default function Home() {
                   </button>
                 </div>
 
-                <div className="candidate-grid">
+                {viralIdea.manualSearchLinks?.length ? (
+                  <div className="manual-search-panel" data-limited={viralIdea.searchLimited}>
+                    <div>
+                      <strong>
+                        {viralIdea.rateLimited ? "TikWM cooldown active" : "Manual clip search fallback"}
+                      </strong>
+                      <span>
+                        {viralIdea.cooldownUntil
+                          ? `Automated search is paused until ${new Date(viralIdea.cooldownUntil).toLocaleTimeString([], {
+                              hour: "numeric",
+                              minute: "2-digit"
+                            })}.`
+                          : "Open a search, choose clips, then paste the TikTok links into the ranked editor."}
+                      </span>
+                    </div>
+                    <div className="manual-link-grid">
+                      {viralIdea.manualSearchLinks.map((link) => (
+                        <a href={link.url} target="_blank" rel="noreferrer" key={link.url}>
+                          <Search size={15} />
+                          {link.label}
+                          <ExternalLink size={14} />
+                        </a>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
+
+                {viralIdea.candidates.length ? (
+                  <div className="candidate-grid">
                   {viralIdea.candidates.map((candidate) => {
                     const isSelected = selectedCandidateIds.includes(candidate.id);
 
@@ -2213,7 +2266,8 @@ export default function Home() {
                       </label>
                     );
                   })}
-                </div>
+                  </div>
+                ) : null}
 
                 <div className="description-panel">
                   <div className="description-head">
