@@ -87,6 +87,13 @@ function parseScheduleInput(value) {
   ].sort();
 }
 
+function parseIdInput(value) {
+  return String(value || "")
+    .split(/[\s,;]+/)
+    .map((id) => id.trim())
+    .filter(Boolean);
+}
+
 function zonedParts(date, timeZone) {
   const parts = new Intl.DateTimeFormat("en-CA", {
     timeZone,
@@ -446,6 +453,8 @@ async function findViralIdea() {
     .split(",")
     .map((id) => id.trim())
     .filter(Boolean);
+  const creatorIds = parseIdInput(process.env.UPLOAD_IDEA_CREATOR_IDS);
+  const titleIds = parseIdInput(process.env.UPLOAD_IDEA_TITLE_IDS);
 
   if (!appBaseUrl) {
     throw new Error("APP_BASE_URL is required so GitHub Actions can call /api/ideas/find.");
@@ -454,7 +463,13 @@ async function findViralIdea() {
   const response = await fetch(`${appBaseUrl}/api/ideas/find`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ excludeIds })
+    body: JSON.stringify({
+      excludeIds,
+      ideaSearch: {
+        creatorIds,
+        titleIds
+      }
+    })
   });
   const payload = await response.json();
 

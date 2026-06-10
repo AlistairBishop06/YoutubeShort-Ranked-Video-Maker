@@ -224,6 +224,170 @@ h2 {
   flex: 0 0 auto;
 }
 
+.idea-filter {
+  position: relative;
+  display: grid;
+  gap: 10px;
+}
+
+.filter-toggle {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  width: 100%;
+  min-height: 48px;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: rgba(0, 0, 0, 0.22);
+  color: var(--text);
+  cursor: pointer;
+  padding: 10px 12px;
+  text-align: left;
+}
+
+.filter-toggle > span {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.filter-toggle strong {
+  font-size: 0.88rem;
+  line-height: 1;
+}
+
+.filter-toggle small {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 0.76rem;
+  font-weight: 900;
+  line-height: 1.1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.filter-toggle svg[data-open="true"] {
+  transform: rotate(180deg);
+}
+
+.filter-menu {
+  display: grid;
+  gap: 14px;
+  border: 1px solid rgba(57, 255, 136, 0.28);
+  border-radius: 16px;
+  background: rgba(0, 0, 0, 0.24);
+  padding: 12px;
+}
+
+.filter-section {
+  display: grid;
+  gap: 10px;
+}
+
+.filter-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.filter-section-head > div:first-child {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.filter-section-head strong {
+  color: var(--text);
+  font-size: 0.86rem;
+}
+
+.filter-section-head span {
+  color: var(--muted);
+  font-size: 0.75rem;
+  font-weight: 900;
+}
+
+.filter-section-head > div:last-child {
+  display: inline-flex;
+  flex: 0 0 auto;
+  gap: 6px;
+}
+
+.filter-section-head button {
+  min-height: 30px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text);
+  cursor: pointer;
+  font-size: 0.74rem;
+  font-weight: 900;
+  padding: 0 9px;
+}
+
+.option-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(142px, 1fr));
+  max-height: 268px;
+  gap: 8px;
+  overflow: auto;
+  padding-right: 3px;
+}
+
+.option-grid-compact {
+  grid-template-columns: repeat(auto-fill, minmax(156px, 1fr));
+  max-height: 178px;
+}
+
+.option-tile {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-areas:
+    "check label"
+    "check group";
+  min-height: 54px;
+  align-items: center;
+  column-gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.055);
+  cursor: pointer;
+  padding: 8px 10px;
+}
+
+.option-tile[data-checked="true"] {
+  border-color: rgba(57, 255, 136, 0.54);
+  background: rgba(57, 255, 136, 0.12);
+}
+
+.option-tile input {
+  grid-area: check;
+  width: 16px;
+  height: 16px;
+  accent-color: var(--accent);
+}
+
+.option-tile span {
+  grid-area: label;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--text);
+  font-size: 0.78rem;
+  font-weight: 950;
+  line-height: 1.1;
+}
+
+.option-tile small {
+  grid-area: group;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 0.68rem;
+  font-weight: 900;
+  line-height: 1.1;
+}
+
 .schedule-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(220px, 0.42fr);
@@ -994,6 +1158,12 @@ h2 {
 
   .candidate-grid {
     grid-template-columns: 1fr;
+  }
+
+  .option-grid,
+  .option-grid-compact {
+    grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));
+    max-height: 260px;
   }
 
   .github-schedule-panel .compact-button {

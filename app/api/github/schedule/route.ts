@@ -1,9 +1,17 @@
 import { NextRequest, NextResponse } from "next/server";
+import {
+  DEFAULT_IDEA_SEARCH_SETTINGS,
+  normalizeIdeaSearchSettings,
+  parseIdeaSearchIdList,
+  type IdeaSearchSettingsInput
+} from "../../../lib/idea-options";
 
 export const runtime = "nodejs";
 
 const VARIABLE_NAMES = {
   enabled: "UPLOAD_SCHEDULE_ENABLED",
+  ideaCreators: "UPLOAD_IDEA_CREATOR_IDS",
+  ideaTitles: "UPLOAD_IDEA_TITLE_IDS",
   lastSlot: "LAST_UPLOAD_SLOT",
   times: "UPLOAD_SCHEDULE_TIMES",
   timezone: "UPLOAD_SCHEDULE_TIMEZONE"
@@ -216,6 +224,7 @@ export async function GET() {
       missing,
       schedule: {
         enabled: false,
+        ideaSearch: DEFAULT_IDEA_SEARCH_SETTINGS,
         times: [],
         timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
         lastSlot: ""
@@ -224,18 +233,28 @@ export async function GET() {
   }
 
   try {
-    const [enabled, times, timezone] = await Promise.all([
+    const [enabled, times, timezone, ideaCreators, ideaTitles] = await Promise.all([
       readOptionalVariable(VARIABLE_NAMES.enabled),
       readOptionalVariable(VARIABLE_NAMES.times),
-      readOptionalVariable(VARIABLE_NAMES.timezone)
+      readOptionalVariable(VARIABLE_NAMES.timezone),
+      readOptionalVariable(VARIABLE_NAMES.ideaCreators),
+      readOptionalVariable(VARIABLE_NAMES.ideaTitles)
     ]);
     const lastSlot = await readOptionalVariable(VARIABLE_NAMES.lastSlot);
+    const ideaSearch = normalizeIdeaSearchSettings({
+      creatorIds: parseIdeaSearchIdList(ideaCreators),
+      titleIds: parseIdeaSearchIdList(ideaTitles)
+    });
 
     return NextResponse.json({
       configured: true,
       missing: [],
       schedule: {
         enabled: enabled === "true",
+        ideaSearch: {
+          creatorIds: ideaSearch.creatorIds,
+          titleIds: ideaSearch.titleIds
+        },
         times: times.split(",").filter(Boolean),
         timezone: timezone || "UTC",
         lastSlot
@@ -252,11 +271,13 @@ export async function POST(request: NextRequest) {
   try {
     const body = (await request.json()) as {
       enabled?: boolean;
+      ideaSearch?: IdeaSearchSettingsInput;
       times?: string;
       timezone?: string;
     };
     const parsed = parseScheduleInput(body.times ?? "");
     const timezone = assertValidTimeZone(body.timezone || "UTC");
+    const ideaSearch = normalizeIdeaSearchSettings(body.ideaSearch);
 
     if (parsed.error) {
       return NextResponse.json({ error: parsed.error }, { status: 400 });
@@ -267,6 +288,8 @@ export async function POST(request: NextRequest) {
     }
 
     await upsertVariable(VARIABLE_NAMES.enabled, body.enabled ? "true" : "false");
+    await upsertVariable(VARIABLE_NAMES.ideaCreators, ideaSearch.creatorIds.join(","));
+    await upsertVariable(VARIABLE_NAMES.ideaTitles, ideaSearch.titleIds.join(","));
     await upsertVariable(VARIABLE_NAMES.times, parsed.times.join(","));
     await upsertVariable(VARIABLE_NAMES.timezone, timezone);
 
@@ -274,6 +297,10 @@ export async function POST(request: NextRequest) {
       configured: true,
       schedule: {
         enabled: Boolean(body.enabled),
+        ideaSearch: {
+          creatorIds: ideaSearch.creatorIds,
+          titleIds: ideaSearch.titleIds
+        },
         times: parsed.times,
         timezone
       }

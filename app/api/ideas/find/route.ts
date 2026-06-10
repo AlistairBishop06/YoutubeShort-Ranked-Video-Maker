@@ -1,4 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
+import {
+  normalizeIdeaSearchSettings,
+  type IdeaSearchSettingsInput,
+  type NormalizedIdeaSearchSettings
+} from "../../../lib/idea-options";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -807,11 +812,13 @@ async function fetchTrendingTerms() {
   }
 }
 
-function buildSearchIdeas(trendingTerms: string[]) {
-  const creatorIdeas = CREATOR_NAMES.flatMap((creator) =>
-    shuffle(CREATOR_VARIANTS).slice(0, 10).map((variant) => `${creator} ${variant}`)
+function buildSearchIdeas(trendingTerms: string[], ideaSearch: NormalizedIdeaSearchSettings) {
+  const creatorVariants = ideaSearch.titleVariants.length ? ideaSearch.titleVariants : CREATOR_VARIANTS;
+  const creatorNames = ideaSearch.creators.length ? ideaSearch.creators : CREATOR_NAMES;
+  const creatorIdeas = creatorNames.flatMap((creator) =>
+    shuffle(creatorVariants).slice(0, Math.min(10, creatorVariants.length)).map((variant) => `${creator} ${variant}`)
   );
-  const trendIdeas = trendingTerms.flatMap((term) => [
+  const trendIdeas = ideaSearch.isCustom ? [] : trendingTerms.flatMap((term) => [
     `${term} moments`,
     `${term} funny moments`,
     `${term} reaction`,
@@ -819,8 +826,10 @@ function buildSearchIdeas(trendingTerms: string[]) {
     `${term} fails`,
     `${term} fan reaction`
   ]);
+  const fallbackIdeas = ideaSearch.isCustom ? [] : FALLBACK_IDEAS;
+  const generalTopics = ideaSearch.isCustom ? [] : GENERAL_VARIANT_TOPICS;
 
-  return [...new Set([...creatorIdeas, ...FALLBACK_IDEAS, ...GENERAL_VARIANT_TOPICS, ...trendIdeas])];
+  return [...new Set([...creatorIdeas, ...fallbackIdeas, ...generalTopics, ...trendIdeas])];
 }
 
 function shuffle<T>(items: T[]) {
@@ -1316,7 +1325,11 @@ function manualFallbackIdea({
 }
 
 export async function POST(request: NextRequest) {
-  const body = (await request.json().catch(() => ({}))) as { excludeIds?: string[] };
+  const body = (await request.json().catch(() => ({}))) as {
+    excludeIds?: string[];
+    ideaSearch?: IdeaSearchSettingsInput;
+  };
+  const ideaSearch = normalizeIdeaSearchSettings(body.ideaSearch);
   const excludedIds = new Set([
     ...getRecentCandidateIds(),
     ...(Array.isArray(body.excludeIds) ? body.excludeIds : [])
@@ -1324,7 +1337,7 @@ export async function POST(request: NextRequest) {
   const trendingTerms = await fetchTrendingTerms();
   const recent = getRecentTopics();
   const recentKeys = new Set(recent.map((recentTopic) => recentTopic.key));
-  const ideas = shuffle(buildSearchIdeas(trendingTerms));
+  const ideas = shuffle(buildSearchIdeas(trendingTerms, ideaSearch));
   const nonRecentIdeas = ideas.filter((idea) => !recentKeys.has(topicKey(idea)));
   const recentIdeas = ideas.filter((idea) => recentKeys.has(topicKey(idea)));
   const orderedIdeas = [...nonRecentIdeas, ...recentIdeas].slice(0, MAX_SEARCH_ATTEMPTS);

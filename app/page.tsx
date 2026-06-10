@@ -4,6 +4,7 @@ import { FFmpeg } from "@ffmpeg/ffmpeg";
 import { fetchFile } from "@ffmpeg/util";
 import {
   AlertCircle,
+  ChevronDown,
   Check,
   Clock,
   Copy,
@@ -14,11 +15,18 @@ import {
   Loader2,
   Play,
   Search,
+  SlidersHorizontal,
   Upload,
   Wand2,
   Youtube
 } from "lucide-react";
 import { ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
+import {
+  CREATOR_SEARCH_OPTIONS,
+  DEFAULT_IDEA_SEARCH_SETTINGS,
+  TITLE_SEARCH_OPTIONS,
+  normalizeIdeaSearchSettings
+} from "./lib/idea-options";
 
 type RankingEntry = {
   rank: number;
@@ -78,6 +86,10 @@ type GitHubScheduleStatus = {
   missing: string[];
   schedule?: {
     enabled: boolean;
+    ideaSearch?: {
+      creatorIds: string[];
+      titleIds: string[];
+    };
     times: string[];
     timezone: string;
     lastSlot?: string;
@@ -1278,6 +1290,9 @@ export default function Home() {
   const [githubScheduleMessage, setGithubScheduleMessage] = useState("Not saved to GitHub yet");
   const [githubScheduleTimezone, setGithubScheduleTimezone] = useState("UTC");
   const [isSavingGithubSchedule, setIsSavingGithubSchedule] = useState(false);
+  const [ideaSearchOpen, setIdeaSearchOpen] = useState(false);
+  const [ideaCreatorIds, setIdeaCreatorIds] = useState<string[]>(DEFAULT_IDEA_SEARCH_SETTINGS.creatorIds);
+  const [ideaTitleIds, setIdeaTitleIds] = useState<string[]>(DEFAULT_IDEA_SEARCH_SETTINGS.titleIds);
 
   const ffmpegRef = useRef<FFmpeg | null>(null);
   const autoRunEnabledRef = useRef(false);
@@ -1311,6 +1326,20 @@ export default function Home() {
     () => parseDailyScheduleInput(dailyScheduleInput),
     [dailyScheduleInput]
   );
+  const selectedIdeaSearch = useMemo(
+    () =>
+      normalizeIdeaSearchSettings({
+        creatorIds: ideaCreatorIds,
+        titleIds: ideaTitleIds
+      }),
+    [ideaCreatorIds, ideaTitleIds]
+  );
+  const ideaSearchError = !ideaCreatorIds.length
+    ? "Select at least one creator."
+    : !ideaTitleIds.length
+      ? "Select at least one title style."
+      : "";
+  const ideaSearchSummary = `${ideaCreatorIds.length} creators - ${ideaTitleIds.length} titles`;
 
   useEffect(() => {
     let isMounted = true;
@@ -1357,6 +1386,12 @@ export default function Home() {
 
         if (savedSchedule?.times?.length) {
           setDailyScheduleInput(savedSchedule.times.join(", "));
+        }
+
+        if (savedSchedule?.ideaSearch) {
+          const savedIdeaSearch = normalizeIdeaSearchSettings(savedSchedule.ideaSearch);
+          setIdeaCreatorIds(savedIdeaSearch.creatorIds);
+          setIdeaTitleIds(savedIdeaSearch.titleIds);
         }
 
         setGithubScheduleEnabled(Boolean(savedSchedule?.enabled));
@@ -1492,6 +1527,43 @@ export default function Home() {
     updateEntry(rank, { file, duration: undefined });
   }
 
+  function updateIdeaSearchIds(kind: "creator" | "title", ids: string[]) {
+    const uniqueIds = [...new Set(ids)];
+
+    if (kind === "creator") {
+      setIdeaCreatorIds(uniqueIds);
+    } else {
+      setIdeaTitleIds(uniqueIds);
+    }
+
+    setErrors((current) => {
+      const { ideaSearch, ...rest } = current;
+      return rest;
+    });
+  }
+
+  function toggleIdeaSearchOption(kind: "creator" | "title", id: string) {
+    const currentIds = kind === "creator" ? ideaCreatorIds : ideaTitleIds;
+    const nextIds = currentIds.includes(id)
+      ? currentIds.filter((currentId) => currentId !== id)
+      : [...currentIds, id];
+
+    updateIdeaSearchIds(kind, nextIds);
+  }
+
+  function setAllIdeaSearchOptions(kind: "creator" | "title") {
+    updateIdeaSearchIds(
+      kind,
+      kind === "creator"
+        ? DEFAULT_IDEA_SEARCH_SETTINGS.creatorIds
+        : DEFAULT_IDEA_SEARCH_SETTINGS.titleIds
+    );
+  }
+
+  function clearIdeaSearchOptions(kind: "creator" | "title") {
+    updateIdeaSearchIds(kind, []);
+  }
+
   async function saveGithubSchedule() {
     if (parsedDailySchedule.error) {
       setErrors((current) => ({ ...current, dailySchedule: parsedDailySchedule.error }));
@@ -1499,10 +1571,16 @@ export default function Home() {
       return;
     }
 
+    if (ideaSearchError) {
+      setErrors((current) => ({ ...current, ideaSearch: ideaSearchError }));
+      setGithubScheduleMessage(ideaSearchError);
+      return;
+    }
+
     setIsSavingGithubSchedule(true);
     setGithubScheduleMessage("Saving to GitHub Actions...");
     setErrors((current) => {
-      const { dailySchedule, githubSchedule, ...rest } = current;
+      const { dailySchedule, githubSchedule, ideaSearch, ...rest } = current;
       return rest;
     });
 
@@ -1512,6 +1590,10 @@ export default function Home() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           enabled: githubScheduleEnabled,
+          ideaSearch: {
+            creatorIds: selectedIdeaSearch.creatorIds,
+            titleIds: selectedIdeaSearch.titleIds
+          },
           times: dailyScheduleInput,
           timezone: githubScheduleTimezone
         })
@@ -1529,8 +1611,8 @@ export default function Home() {
       });
       setGithubScheduleMessage(
         payload.schedule?.enabled
-          ? `Saved. GitHub Actions will run at ${payload.schedule.times.join(", ")} ${payload.schedule.timezone}.`
-          : "Saved. GitHub Actions schedule is disabled."
+          ? `Saved. GitHub Actions will run at ${payload.schedule.times.join(", ")} ${payload.schedule.timezone} using ${ideaSearchSummary}.`
+          : `Saved. GitHub Actions schedule is disabled. Filters saved for ${ideaSearchSummary}.`
       );
     } catch (error) {
       const message = error instanceof Error ? error.message : "Could not save GitHub schedule.";
@@ -1562,7 +1644,20 @@ export default function Home() {
   }
 
   async function fetchViralIdea() {
-    const response = await fetch("/api/ideas/find", { method: "POST" });
+    if (ideaSearchError) {
+      throw new Error(ideaSearchError);
+    }
+
+    const response = await fetch("/api/ideas/find", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        ideaSearch: {
+          creatorIds: selectedIdeaSearch.creatorIds,
+          titleIds: selectedIdeaSearch.titleIds
+        }
+      })
+    });
     const payload = (await response.json()) as Partial<ViralIdea> & { error?: string };
 
     if (!response.ok || !payload.title || !Array.isArray(payload.candidates)) {
@@ -2188,6 +2283,98 @@ export default function Home() {
               </button>
             </div>
 
+            <div className="idea-filter">
+              <button
+                type="button"
+                className="filter-toggle"
+                aria-expanded={ideaSearchOpen}
+                onClick={() => setIdeaSearchOpen((current) => !current)}
+              >
+                <SlidersHorizontal size={18} />
+                <span>
+                  <strong>Search filters</strong>
+                  <small>{selectedIdeaSearch.isCustom ? ideaSearchSummary : "All creators - all titles"}</small>
+                </span>
+                <ChevronDown size={18} data-open={ideaSearchOpen} />
+              </button>
+
+              {ideaSearchOpen ? (
+                <div className="filter-menu">
+                  <div className="filter-section">
+                    <div className="filter-section-head">
+                      <div>
+                        <strong>Creators</strong>
+                        <span>{ideaCreatorIds.length} selected</span>
+                      </div>
+                      <div>
+                        <button type="button" onClick={() => setAllIdeaSearchOptions("creator")}>
+                          All
+                        </button>
+                        <button type="button" onClick={() => clearIdeaSearchOptions("creator")}>
+                          Clear
+                        </button>
+                      </div>
+                    </div>
+                    <div className="option-grid">
+                      {CREATOR_SEARCH_OPTIONS.map((option) => {
+                        const checked = ideaCreatorIds.includes(option.id);
+
+                        return (
+                          <label className="option-tile" data-checked={checked} key={option.id}>
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={() => toggleIdeaSearchOption("creator", option.id)}
+                            />
+                            <span>{option.label}</span>
+                            <small>{option.group}</small>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  <div className="filter-section">
+                    <div className="filter-section-head">
+                      <div>
+                        <strong>Title styles</strong>
+                        <span>{ideaTitleIds.length} selected</span>
+                      </div>
+                      <div>
+                        <button type="button" onClick={() => setAllIdeaSearchOptions("title")}>
+                          All
+                        </button>
+                        <button type="button" onClick={() => clearIdeaSearchOptions("title")}>
+                          Clear
+                        </button>
+                      </div>
+                    </div>
+                    <div className="option-grid option-grid-compact">
+                      {TITLE_SEARCH_OPTIONS.map((option) => {
+                        const checked = ideaTitleIds.includes(option.id);
+
+                        return (
+                          <label className="option-tile" data-checked={checked} key={option.id}>
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={() => toggleIdeaSearchOption("title", option.id)}
+                            />
+                            <span>{option.label}</span>
+                            <small>{option.group}</small>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  {ideaSearchError || errors.ideaSearch ? (
+                    <small className="error-text">{errors.ideaSearch || ideaSearchError}</small>
+                  ) : null}
+                </div>
+              ) : null}
+            </div>
+
             <div className="schedule-row">
               <label className="field schedule-field">
                 <span>Daily upload times</span>
@@ -2235,7 +2422,7 @@ export default function Home() {
               <button
                 className="secondary-button compact-button"
                 onClick={saveGithubSchedule}
-                disabled={isSavingGithubSchedule || Boolean(parsedDailySchedule.error)}
+                disabled={isSavingGithubSchedule || Boolean(parsedDailySchedule.error || ideaSearchError)}
               >
                 {isSavingGithubSchedule ? <Loader2 size={17} className="spin" /> : <Github size={17} />}
                 Save GitHub Schedule
