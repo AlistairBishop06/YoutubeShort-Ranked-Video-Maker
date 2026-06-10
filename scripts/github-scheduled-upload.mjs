@@ -701,8 +701,10 @@ async function clipPlan(inputPath, sourceDurationHint, maxDuration) {
 
 async function loudestHookPlan(entries) {
   let best = null;
+  const preferredEntries = entries.filter((entry) => entry.rank !== RANK_COUNT);
+  const hookCandidates = preferredEntries.length ? preferredEntries : entries;
 
-  for (const entry of entries) {
+  for (const entry of hookCandidates) {
     const measuredDuration = await probeDuration(entry.inputPath);
     const sourceDuration = Math.max(
       0.5,

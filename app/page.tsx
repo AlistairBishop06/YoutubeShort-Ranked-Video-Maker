@@ -822,8 +822,10 @@ async function browserClipPlan(entry: RankingEntry, maxDuration: number, smartHi
 
 async function browserHookPlanFromLoudestEntry(entries: RankingEntry[]) {
   let best: { entry: RankingEntry & { file: File }; plan: ClipPlan; score: number } | null = null;
+  const preferredEntries = entries.filter((entry) => entry.rank !== RANK_COUNT);
+  const hookCandidates = preferredEntries.length ? preferredEntries : entries;
 
-  for (const entry of entries) {
+  for (const entry of hookCandidates) {
     if (!entry.file) {
       continue;
     }
