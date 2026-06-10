@@ -1146,12 +1146,12 @@ async function renderSegment({
     : "";
   const videoFilter = `color=c=${accentColor.ffmpeg}@0.95:s=${OUTPUT_WIDTH}x18:r=30:d=${durationText},format=rgba[progressBar];[0:v]setpts=PTS-STARTPTS,scale=${OUTPUT_WIDTH}:${OUTPUT_HEIGHT}:force_original_aspect_ratio=increase,crop=${OUTPUT_WIDTH}:${OUTPUT_HEIGHT},setsar=1,format=rgba[base];[base][1:v]overlay=0:0:format=auto[withOverlay];[2:v]format=rgba,fade=t=out:st=0.48:d=0.32:alpha=1[rankReveal];[withOverlay][rankReveal]overlay=0:0:format=auto:enable='between(t\\,0\\,0.80)',format=yuv420p,drawbox=x=0:y=${progressY}:w=iw:h=18:color=white@0.18:t=fill[progressBase];[progressBase][progressBar]overlay=x='${progressOverlayX}':y=${progressY}:format=auto,format=yuv420p,fade=t=in:st=0:d=${fadeDuration},fade=t=out:st=${fadeOutStart}:d=${fadeDuration},trim=0:${durationText},setpts=PTS-STARTPTS,fps=30,format=yuv420p[${clipVideoLabel}]${transitionVideoFilter}`;
   const sourceAudioDelay = hasTransition ? `,adelay=${transitionDelayMs}|${transitionDelayMs}` : "";
-  const sourceAudioFilter = `[0:a]atrim=0:${durationText},asetpts=PTS-STARTPTS,aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo${sourceAudioDelay},apad=pad_dur=${transitionDurationText},atrim=0:${outputDurationText}[clipa]`;
+  const sourceAudioFilter = `[0:a]atrim=0:${durationText},asetpts=PTS-STARTPTS,aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo${sourceAudioDelay},apad=pad_dur=${outputDurationText},atrim=0:${outputDurationText}[clipa]`;
   const sfxAudioFilter = sfxName
-    ? `[3:a]atrim=0:${transitionDurationText},asetpts=PTS-STARTPTS,volume=1.35,aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo,apad=pad_dur=${durationText},atrim=0:${outputDurationText}[sfx]`
+    ? `[3:a]atrim=0:${transitionDurationText},asetpts=PTS-STARTPTS,volume=2.05,aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo,apad=pad_dur=${outputDurationText},atrim=0:${outputDurationText}[sfx]`
     : "";
   const mixedAudioFilter = sfxName
-    ? "[clipa][sfx]amix=inputs=2:duration=first:dropout_transition=0,volume=1.05[a]"
+    ? `[clipa][sfx]amix=inputs=2:duration=longest:dropout_transition=0,atrim=0:${outputDurationText},asetpts=PTS-STARTPTS,volume=1.05[a]`
     : "[clipa]volume=1[a]";
   const silentInputIndex = sfxName ? 4 : 3;
   const silentAudioFilter = `[${silentInputIndex}:a]atrim=0:${outputDurationText},asetpts=PTS-STARTPTS,aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo[clipa]`;

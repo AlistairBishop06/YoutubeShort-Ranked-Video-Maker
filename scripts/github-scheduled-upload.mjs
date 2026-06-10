@@ -318,6 +318,28 @@ function impactSfxWavBuffer() {
   return buffer;
 }
 
+async function pathExists(filePath) {
+  try {
+    await stat(filePath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function resolveTransitionSfxPath(workDir) {
+  const assetPath = resolve(process.cwd(), "app", "assets", "sounds", "boom.mp3");
+
+  if (await pathExists(assetPath)) {
+    return assetPath;
+  }
+
+  const fallbackPath = join(workDir, "transition-boom.wav");
+  await writeFile(fallbackPath, impactSfxWavBuffer());
+  console.warn("Boom MP3 asset was not found in the GitHub checkout; using a generated fallback impact sound.");
+  return fallbackPath;
+}
+
 function emojiPackForTitle(value) {
   const lower = value.toLowerCase();
 
@@ -907,10 +929,12 @@ async function renderSegment({
     fadeDuration,
     fadeOutStart
   });
-  const hasAudio = await hasAudioStream(inputPath);
-  const sourceAudioFilter = `[0:a]atrim=0:${durationText},asetpts=PTS-STARTPTS,aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo,adelay=${transitionDelayMs}|${transitionDelayMs},apad=pad_dur=${transitionDurationText},atrim=0:${outputDurationText}[clipa]`;
-  const sfxAudioFilter = `[1:a]atrim=0:${transitionDurationText},asetpts=PTS-STARTPTS,volume=1.35,aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo,apad=pad_dur=${durationText},atrim=0:${outputDurationText}[sfx]`;
-  const mixedAudioFilter = "[clipa][sfx]amix=inputs=2:duration=first:dropout_transition=0,volume=1.05[a]";
+  // The clip audio is delayed to start after the black/boom transition. Mix
+  // with duration=longest and trim afterwards so the transition SFX cannot be
+  // dropped when FFmpeg sees a delayed or short source stream.
+  const sourceAudioFilter = `[0:a]atrim=0:${durationText},asetpts=PTS-STARTPTS,aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo,adelay=${transitionDelayMs}|${transitionDelayMs},apad=pad_dur=${outputDurationText},atrim=0:${outputDurationText}[clipa]`;
+  const sfxAudioFilter = `[1:a]atrim=0:${transitionDurationText},asetpts=PTS-STARTPTS,volume=2.05,aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo,apad=pad_dur=${outputDurationText},atrim=0:${outputDurationText}[sfx]`;
+  const mixedAudioFilter = `[clipa][sfx]amix=inputs=2:duration=longest:dropout_transition=0,atrim=0:${outputDurationText},asetpts=PTS-STARTPTS,volume=1.05[a]`;
   const silentAudioFilter = `[2:a]atrim=0:${outputDurationText},asetpts=PTS-STARTPTS,aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo[clipa]`;
   const outputArgs = [
     "-map",
@@ -938,7 +962,7 @@ async function renderSegment({
     outputPath
   ];
 
-  if (hasAudio) {
+  try {
     await run("ffmpeg", [
       "-y",
       "-ss",
@@ -954,6 +978,12 @@ async function renderSegment({
       ...outputArgs
     ]);
     return;
+  } catch (error) {
+    console.warn(
+      `Source audio could not be rendered for #${activeEntry.rank}; using generated silence under the boom SFX. ${
+        error instanceof Error ? error.message : ""
+      }`
+    );
   }
 
   await run("ffmpeg", [
@@ -1105,7 +1135,7 @@ async function renderRankingVideo({ idea, selectedCandidates, workDir }) {
   const rankedPlans = new Map();
   const teaser = hookTeaserLines(idea.title);
   const accentColor = randomAccentColor();
-  const sfxPath = resolve(process.cwd(), "app", "assets", "sounds", "boom.mp3");
+  const sfxPath = await resolveTransitionSfxPath(workDir);
   const loudestHook = await loudestHookPlan(entries);
   const hookEntry = loudestHook.entry;
   const hookPlan = loudestHook.plan;
