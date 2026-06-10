@@ -1,6 +1,6 @@
 import { google } from "googleapis";
 import { createReadStream } from "node:fs";
-import { mkdtemp, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { extname, join, resolve } from "node:path";
 import { Readable } from "node:stream";
@@ -461,7 +461,11 @@ function normalizeMediaUrl(value) {
   return value;
 }
 
-async function resolveTikWMDownloadUrl(tiktokUrl) {
+function uniqueMediaUrls(values) {
+  return [...new Set(values.filter(Boolean).map(normalizeMediaUrl))];
+}
+
+async function resolveTikWMMediaUrls(tiktokUrl) {
   const apiUrl = new URL("https://www.tikwm.com/api/");
   apiUrl.searchParams.set("url", tiktokUrl);
   apiUrl.searchParams.set("hd", "1");
@@ -489,13 +493,17 @@ async function resolveTikWMDownloadUrl(tiktokUrl) {
     throw new Error("TikWM returned a non-JSON download response.");
   }
 
-  const mediaUrl = payload?.data?.hdplay || payload?.data?.play || payload?.data?.wmplay;
+  const mediaUrls = uniqueMediaUrls([
+    payload?.data?.play,
+    payload?.data?.wmplay,
+    payload?.data?.hdplay
+  ]);
 
-  if (payload?.code !== 0 || !mediaUrl) {
+  if (payload?.code !== 0 || !mediaUrls.length) {
     throw new Error(payload?.msg || "TikWM could not resolve this TikTok link.");
   }
 
-  return normalizeMediaUrl(mediaUrl);
+  return mediaUrls;
 }
 
 async function downloadMediaToFile(mediaUrl, outputPath) {
@@ -521,18 +529,31 @@ async function downloadMediaToFile(mediaUrl, outputPath) {
 }
 
 async function downloadTikTokClip(candidate, workDir, rank) {
-  const outputPath = join(workDir, `rank-${rank}.mp4`);
-  const mediaUrl = await resolveTikWMDownloadUrl(candidate.url);
-  await downloadMediaToFile(mediaUrl, outputPath);
+  const mediaUrls = await resolveTikWMMediaUrls(candidate.url);
+  let firstDownloadedPath = "";
+  let lastError = null;
 
-  const files = await readdir(workDir);
-  const fileName = files.find((file) => file.startsWith(`rank-${rank}.`));
+  for (let index = 0; index < mediaUrls.length; index += 1) {
+    const candidatePath = join(workDir, `rank-${rank}-${index}.mp4`);
 
-  if (!fileName) {
-    throw new Error(`Could not find downloaded clip for #${rank}.`);
+    try {
+      await downloadMediaToFile(mediaUrls[index], candidatePath);
+      firstDownloadedPath ||= candidatePath;
+
+      if (await hasAudioStream(candidatePath)) {
+        return candidatePath;
+      }
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error("Resolved TikTok media could not be downloaded.");
+    }
   }
 
-  return join(workDir, fileName);
+  if (firstDownloadedPath) {
+    console.warn(`Downloaded #${rank}, but no TikWM media variant contained an audio stream.`);
+    return firstDownloadedPath;
+  }
+
+  throw lastError ?? new Error(`Could not download clip for #${rank}.`);
 }
 
 async function hasAudioStream(inputPath) {

@@ -1208,7 +1208,8 @@ async function renderSegment({
       `${videoFilter};${audioFilters}`,
       ...outputSettings
     ]);
-  } catch {
+  } catch (error) {
+    console.warn(`Source audio could not be rendered for ${segmentName}; using generated silence.`, error);
     // Some TikToks/uploads have no audio stream. Render matching silence instead
     // so the final MP4 still has a stable audio track.
     await ffmpeg.exec([

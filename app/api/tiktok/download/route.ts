@@ -48,7 +48,56 @@ function normalizeMediaUrl(value: string) {
   return value;
 }
 
-async function resolveTikWMDownloadUrl(tiktokUrl: string) {
+function uniqueMediaUrls(values: Array<string | undefined>) {
+  return [...new Set(values.filter((value): value is string => Boolean(value)).map(normalizeMediaUrl))];
+}
+
+function hasMp4AudioTrack(bytes: Buffer) {
+  const containers = new Set(["moov", "trak", "mdia", "minf", "stbl", "edts", "moof", "traf"]);
+
+  function scan(start: number, end: number, depth: number): boolean {
+    let offset = start;
+
+    while (offset + 8 <= end && depth < 12) {
+      const size32 = bytes.readUInt32BE(offset);
+      const type = bytes.toString("ascii", offset + 4, offset + 8);
+      let headerSize = 8;
+      let boxSize = size32;
+
+      if (size32 === 1 && offset + 16 <= end) {
+        const largeSize = bytes.readBigUInt64BE(offset + 8);
+        boxSize = Number(largeSize);
+        headerSize = 16;
+      } else if (size32 === 0) {
+        boxSize = end - offset;
+      }
+
+      if (!Number.isFinite(boxSize) || boxSize < headerSize || offset + boxSize > end) {
+        break;
+      }
+
+      if (type === "hdlr" && offset + 20 <= end) {
+        const handlerType = bytes.toString("ascii", offset + 16, offset + 20);
+
+        if (handlerType === "soun") {
+          return true;
+        }
+      }
+
+      if (containers.has(type) && scan(offset + headerSize, offset + boxSize, depth + 1)) {
+        return true;
+      }
+
+      offset += boxSize;
+    }
+
+    return false;
+  }
+
+  return scan(0, bytes.length, 0);
+}
+
+async function resolveTikWMMediaUrls(tiktokUrl: string) {
   const apiUrl = new URL("https://www.tikwm.com/api/");
   apiUrl.searchParams.set("url", tiktokUrl);
   apiUrl.searchParams.set("hd", "1");
@@ -76,13 +125,17 @@ async function resolveTikWMDownloadUrl(tiktokUrl: string) {
     throw new Error("TikWM returned a non-JSON download response.");
   }
 
-  const mediaUrl = payload.data?.hdplay || payload.data?.play || payload.data?.wmplay;
+  const mediaUrls = uniqueMediaUrls([
+    payload.data?.play,
+    payload.data?.wmplay,
+    payload.data?.hdplay
+  ]);
 
-  if (payload.code !== 0 || !mediaUrl) {
+  if (payload.code !== 0 || !mediaUrls.length) {
     throw new Error(payload.msg || "TikWM could not resolve this TikTok link.");
   }
 
-  return normalizeMediaUrl(mediaUrl);
+  return mediaUrls;
 }
 
 async function downloadMedia(mediaUrl: string) {
@@ -105,6 +158,30 @@ async function downloadMedia(mediaUrl: string) {
   }
 
   return bytes;
+}
+
+async function downloadBestAudioMedia(mediaUrls: string[]) {
+  let firstDownloadedBytes: Buffer | null = null;
+  let lastError: Error | null = null;
+
+  for (const mediaUrl of mediaUrls) {
+    try {
+      const bytes = await downloadMedia(mediaUrl);
+      firstDownloadedBytes ??= bytes;
+
+      if (hasMp4AudioTrack(bytes)) {
+        return bytes;
+      }
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error("Resolved TikTok media could not be downloaded.");
+    }
+  }
+
+  if (firstDownloadedBytes) {
+    return firstDownloadedBytes;
+  }
+
+  throw lastError ?? new Error("Resolved TikTok media could not be downloaded.");
 }
 
 function downloaderErrorMessage(error: unknown) {
@@ -148,14 +225,15 @@ export async function POST(request: NextRequest) {
     // TikWM resolves a known TikTok link to a media URL, then this route returns
     // the MP4 bytes directly so Vercel never has to share temp files between
     // separate serverless function invocations.
-    const mediaUrl = await resolveTikWMDownloadUrl(url);
-    const bytes = await downloadMedia(mediaUrl);
+    const mediaUrls = await resolveTikWMMediaUrls(url);
+    const bytes = await downloadBestAudioMedia(mediaUrls);
 
-    return new NextResponse(bytes, {
+    return new NextResponse(new Uint8Array(bytes), {
       headers: {
         "Content-Type": "video/mp4",
         "Content-Length": String(bytes.length),
-        "Content-Disposition": 'attachment; filename="tiktok-clip.mp4"'
+        "Content-Disposition": 'attachment; filename="tiktok-clip.mp4"',
+        "X-Has-Audio": hasMp4AudioTrack(bytes) ? "true" : "false"
       }
     });
   } catch (error) {
