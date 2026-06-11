@@ -162,9 +162,9 @@ function cleanText(value, fallback = "") {
 
 function escapeDrawText(value) {
   return cleanText(value)
+    .replace(/['’]/g, "")
     .replace(/\\/g, "\\\\")
     .replace(/:/g, "\\:")
-    .replace(/'/g, "\\'")
     .replace(/,/g, "\\,")
     .replace(/\[/g, "\\[")
     .replace(/\]/g, "\\]")
