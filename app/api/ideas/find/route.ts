@@ -1042,15 +1042,88 @@ function uniqueCandidates(candidates: Candidate[]) {
   return unique;
 }
 
+function candidateSimilarityWords(candidate: Candidate) {
+  const text = cleanTopic(`${candidate.sourceTitle} ${candidate.name}`);
+
+  return new Set(
+    text
+      .split(/\s+/)
+      .map((word) => word.replace(/['-]/g, ""))
+      .filter(
+        (word) =>
+          word.length >= 4 &&
+          !IMPORTANT_WORD_STOPWORDS.has(word) &&
+          !HANDLE_WORD_PATTERNS.some((pattern) => word.includes(pattern)) &&
+          !/^\d+$/.test(word)
+      )
+  );
+}
+
+function wordSetSimilarity(first: Set<string>, second: Set<string>) {
+  if (!first.size || !second.size) {
+    return 0;
+  }
+
+  let intersection = 0;
+
+  for (const word of first) {
+    if (second.has(word)) {
+      intersection += 1;
+    }
+  }
+
+  return intersection / Math.min(first.size, second.size);
+}
+
+function likelySameClip(first: Candidate, second: Candidate) {
+  const firstDuration = first.duration || 0;
+  const secondDuration = second.duration || 0;
+  const durationClose =
+    firstDuration > 0 &&
+    secondDuration > 0 &&
+    Math.abs(firstDuration - secondDuration) <= 2;
+  const sameThumbnail = Boolean(first.thumbnail && first.thumbnail === second.thumbnail);
+
+  if (sameThumbnail && durationClose) {
+    return true;
+  }
+
+  const firstWords = candidateSimilarityWords(first);
+  const secondWords = candidateSimilarityWords(second);
+  const similarity = wordSetSimilarity(firstWords, secondWords);
+
+  return similarity >= 0.72 && (durationClose || similarity >= 0.9);
+}
+
+function removeNearDuplicateCandidates(candidates: Candidate[]) {
+  const unique: Candidate[] = [];
+
+  for (const candidate of candidates) {
+    if (unique.some((selected) => likelySameClip(candidate, selected))) {
+      continue;
+    }
+
+    unique.push(candidate);
+  }
+
+  return unique;
+}
+
 function weightedSample(candidates: Candidate[], count: number) {
   const remaining = [...candidates];
   const selected: Candidate[] = [];
   const usedCreators = new Set<string>();
 
   while (remaining.length && selected.length < count) {
-    const creatorDiversePool = remaining.filter((candidate) => !usedCreators.has(candidate.creator));
+    const contentDiverseRemaining = remaining.filter(
+      (candidate) => !selected.some((selectedCandidate) => likelySameClip(candidate, selectedCandidate))
+    );
+    const candidatePool = contentDiverseRemaining.length >= count - selected.length
+      ? contentDiverseRemaining
+      : remaining;
+    const creatorDiversePool = candidatePool.filter((candidate) => !usedCreators.has(candidate.creator));
     const pool =
-      creatorDiversePool.length >= count - selected.length ? creatorDiversePool : remaining;
+      creatorDiversePool.length >= count - selected.length ? creatorDiversePool : candidatePool;
     const weights = pool.map((candidate) => Math.max(1, Math.log10(candidate.score + 10)));
     const totalWeight = weights.reduce((total, weight) => total + weight, 0);
     let cursor = Math.random() * totalWeight;
@@ -1082,7 +1155,9 @@ function weightedSample(candidates: Candidate[], count: number) {
 function rotateCandidates(candidates: Candidate[], excludedIds: Set<string>) {
   const scoreSorted = [...candidates].sort((a, b) => b.score - a.score);
   const freshCandidates = scoreSorted.filter((candidate) => !excludedIds.has(candidate.id));
-  const primaryPool = (freshCandidates.length >= 5 ? freshCandidates : scoreSorted).slice(0, 24);
+  const dedupedFreshCandidates = removeNearDuplicateCandidates(freshCandidates);
+  const dedupedScoreSorted = removeNearDuplicateCandidates(scoreSorted);
+  const primaryPool = (dedupedFreshCandidates.length >= 5 ? dedupedFreshCandidates : dedupedScoreSorted).slice(0, 24);
   const selected = weightedSample(primaryPool, 5).sort((a, b) => b.score - a.score);
   const selectedIds = new Set(selected.map((candidate) => candidate.id));
   const filler = scoreSorted
