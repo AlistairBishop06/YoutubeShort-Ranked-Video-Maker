@@ -1253,11 +1253,11 @@ async function createHookOverlayPng(
   ctx.shadowBlur = 0;
   ctx.fillStyle = "#ff334e";
   ctx.beginPath();
-  ctx.roundRect(185, 1450, 710, 145, 32);
+  ctx.roundRect(185, 1420, 710, 145, 32);
   ctx.fill();
   ctx.fillStyle = "#ffffff";
   ctx.font = '900 58px "Arial Black", Impact, sans-serif';
-  ctx.fillText("SUBSCRIBE", OUTPUT_WIDTH / 2, 1490);
+  ctx.fillText("SUBSCRIBE", OUTPUT_WIDTH / 2, 1460);
 
   ctx.fillStyle = "rgba(255, 255, 255, 0.14)";
   ctx.beginPath();
@@ -1303,7 +1303,278 @@ function drawLikeIcon(
   ctx.restore();
 }
 
-async function createHookEngagementPulsePng(kind: "subscribe" | "like") {
+type EngagementKind = "subscribe" | "like";
+type EngagementPlacement = "hook" | "end";
+type EngagementBox = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  radius: number;
+};
+
+const ENGAGEMENT_FRAME_RATE = 30;
+
+function drawCheckIcon(
+  ctx: CanvasRenderingContext2D,
+  centerX: number,
+  centerY: number,
+  radius: number
+) {
+  ctx.save();
+  ctx.fillStyle = "#ffffff";
+  ctx.beginPath();
+  ctx.arc(centerX, centerY, radius, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.strokeStyle = "#0b9f58";
+  ctx.lineWidth = Math.max(8, radius * 0.22);
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+  ctx.beginPath();
+  ctx.moveTo(centerX - radius * 0.48, centerY);
+  ctx.lineTo(centerX - radius * 0.12, centerY + radius * 0.36);
+  ctx.lineTo(centerX + radius * 0.52, centerY - radius * 0.38);
+  ctx.stroke();
+  ctx.restore();
+}
+
+function drawTapIndicator(
+  ctx: CanvasRenderingContext2D,
+  centerX: number,
+  centerY: number,
+  radius: number,
+  opacity = 1
+) {
+  ctx.save();
+  ctx.globalAlpha = opacity;
+  ctx.strokeStyle = "rgba(255, 255, 255, 0.95)";
+  ctx.lineWidth = 8;
+  ctx.beginPath();
+  ctx.arc(centerX, centerY, radius, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.fillStyle = "#ffffff";
+  ctx.beginPath();
+  ctx.arc(centerX, centerY, radius * 0.38, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+}
+
+function clamp01(value: number) {
+  return Math.min(1, Math.max(0, value));
+}
+
+function easeOutCubic(value: number) {
+  const inverse = 1 - clamp01(value);
+  return 1 - inverse * inverse * inverse;
+}
+
+function easeInOutCubic(value: number) {
+  const progress = clamp01(value);
+  return progress < 0.5
+    ? 4 * progress * progress * progress
+    : 1 - Math.pow(-2 * progress + 2, 3) / 2;
+}
+
+function easeOutBack(value: number) {
+  const progress = clamp01(value);
+  const overshoot = 1.70158;
+  return 1 + (overshoot + 1) * Math.pow(progress - 1, 3) + overshoot * Math.pow(progress - 1, 2);
+}
+
+function lerp(start: number, end: number, progress: number) {
+  return start + (end - start) * progress;
+}
+
+function mixHexColor(from: string, to: string, progress: number) {
+  const amount = clamp01(progress);
+  const fromValue = Number.parseInt(from.slice(1), 16);
+  const toValue = Number.parseInt(to.slice(1), 16);
+  const channels = [16, 8, 0].map((shift) =>
+    Math.round(
+      lerp((fromValue >> shift) & 255, (toValue >> shift) & 255, amount)
+    )
+  );
+  return `rgb(${channels[0]}, ${channels[1]}, ${channels[2]})`;
+}
+
+function engagementBoxes(
+  placement: EngagementPlacement,
+  kind: EngagementKind
+): { base: EngagementBox; settled: EngagementBox } {
+  const isHook = placement === "hook";
+  const base =
+    kind === "subscribe"
+      ? isHook
+        ? { x: 185, y: 1420, width: 710, height: 145, radius: 32 }
+        : { x: 170, y: 1015, width: 740, height: 190, radius: 38 }
+      : isHook
+        ? { x: 325, y: 1650, width: 430, height: 120, radius: 28 }
+        : { x: 300, y: 1355, width: 480, height: 150, radius: 34 };
+  const settled =
+    kind === "subscribe"
+      ? isHook
+        ? { x: 165, y: 1405, width: 750, height: 175, radius: 38 }
+        : { x: 150, y: 995, width: 780, height: 220, radius: 44 }
+      : isHook
+        ? { x: 305, y: 1640, width: 470, height: 140, radius: 32 }
+        : { x: 275, y: 1335, width: 530, height: 190, radius: 40 };
+
+  return { base, settled };
+}
+
+function drawAnimatedEngagementButton(
+  ctx: CanvasRenderingContext2D,
+  placement: EngagementPlacement,
+  kind: EngagementKind,
+  localTime: number
+) {
+  if (localTime < 0) {
+    return;
+  }
+
+  const isHook = placement === "hook";
+  const { base, settled } = engagementBoxes(placement, kind);
+  const pressProgress = clamp01(localTime / 0.22);
+  const releaseProgress = clamp01((localTime - 0.22) / 0.52);
+  const successProgress = easeInOutCubic((localTime - 0.17) / 0.32);
+  const boxProgress = easeOutCubic((localTime - 0.18) / 0.48);
+  const scale =
+    localTime < 0.22
+      ? lerp(1, 0.88, easeOutCubic(pressProgress))
+      : 1 - 0.12 * Math.exp(-5.5 * releaseProgress) * Math.cos(releaseProgress * Math.PI * 3);
+  const centerX = lerp(base.x + base.width / 2, settled.x + settled.width / 2, boxProgress);
+  const centerY = lerp(base.y + base.height / 2, settled.y + settled.height / 2, boxProgress);
+  const width = lerp(base.width, settled.width, boxProgress);
+  const height = lerp(base.height, settled.height, boxProgress);
+  const radius = lerp(base.radius, settled.radius, boxProgress);
+  const successColor = kind === "subscribe" ? "#12b968" : "#258ee9";
+  const pressColor = kind === "subscribe" ? "#bd1731" : "#176da8";
+  const currentColor = mixHexColor(pressColor, successColor, successProgress);
+
+  ctx.save();
+  ctx.translate(centerX, centerY);
+  ctx.scale(scale, scale);
+  ctx.shadowColor =
+    kind === "subscribe" ? "rgba(18, 185, 104, 0.88)" : "rgba(37, 142, 233, 0.88)";
+  ctx.shadowBlur = lerp(16, 38, successProgress);
+  ctx.fillStyle = currentColor;
+  ctx.beginPath();
+  ctx.roundRect(-width / 2, -height / 2, width, height, radius);
+  ctx.fill();
+  ctx.shadowBlur = 0;
+  if (localTime < 0.28) {
+    ctx.fillStyle = "rgba(0, 0, 0, 0.16)";
+    ctx.beginPath();
+    ctx.roundRect(
+      -width / 2 + 10,
+      -height / 2 + 12,
+      width - 20,
+      height - 18,
+      Math.max(18, radius - 8)
+    );
+    ctx.fill();
+  }
+
+  ctx.fillStyle = "#ffffff";
+  if (kind === "subscribe") {
+    const iconProgress = easeOutBack((localTime - 0.28) / 0.34);
+    if (iconProgress > 0) {
+      const iconRadius = (isHook ? 27 : 32) * iconProgress;
+      drawCheckIcon(ctx, -width / 2 + (isHook ? 64 : 74), 0, iconRadius);
+    }
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    const fontSize = isHook ? 52 : 62;
+    ctx.font = `900 ${fontSize}px "Arial Black", Impact, sans-serif`;
+    ctx.globalAlpha = 1 - successProgress;
+    ctx.fillText("SUBSCRIBE", 0, 1);
+    ctx.globalAlpha = successProgress;
+    ctx.fillText("SUBSCRIBED!", width * 0.06, 1);
+  } else {
+    const iconScale = (isHook ? 0.78 : 0.98) * (1 + 0.12 * Math.sin(successProgress * Math.PI));
+    drawLikeIcon(
+      ctx,
+      -width / 2 + (isHook ? 38 : 48),
+      -height / 2 + (isHook ? 16 : 26),
+      iconScale,
+      "#ffffff"
+    );
+    ctx.textAlign = "left";
+    ctx.textBaseline = "middle";
+    const fontSize = isHook ? 50 : 64;
+    ctx.font = `900 ${fontSize}px "Arial Black", Impact, sans-serif`;
+    const textX = -width / 2 + width * 0.45;
+    ctx.globalAlpha = 1 - successProgress;
+    ctx.fillText("LIKE", textX, 1);
+    ctx.globalAlpha = successProgress;
+    ctx.fillText("LIKED!", textX, 1);
+  }
+  ctx.restore();
+
+  const tapProgress = clamp01(localTime / 0.3);
+  if (tapProgress < 1) {
+    drawTapIndicator(
+      ctx,
+      centerX + width * 0.34,
+      centerY + height * 0.25,
+      lerp(isHook ? 16 : 20, isHook ? 38 : 46, tapProgress),
+      1 - tapProgress
+    );
+  }
+
+  const burstProgress = clamp01((localTime - 0.24) / 0.78);
+  if (burstProgress > 0 && burstProgress < 1) {
+    const ringOpacity = Math.pow(1 - burstProgress, 1.45);
+    ctx.save();
+    ctx.strokeStyle = successColor;
+    ctx.globalAlpha = ringOpacity;
+    ctx.lineWidth = lerp(12, 4, burstProgress);
+    [0, 1].forEach((ringIndex) => {
+      const delayed = clamp01((burstProgress - ringIndex * 0.12) / (1 - ringIndex * 0.12));
+      if (delayed <= 0) {
+        return;
+      }
+      const expansion = lerp(14, isHook ? 92 : 112, easeOutCubic(delayed));
+      ctx.beginPath();
+      ctx.roundRect(
+        centerX - width / 2 - expansion,
+        centerY - height / 2 - expansion * 0.55,
+        width + expansion * 2,
+        height + expansion * 1.1,
+        radius + expansion * 0.35
+      );
+      ctx.stroke();
+    });
+
+    const particleCount = 14;
+    for (let index = 0; index < particleCount; index += 1) {
+      const angle = (Math.PI * 2 * index) / particleCount - Math.PI / 2;
+      const distance = lerp(width * 0.48, width * 0.72, easeOutCubic(burstProgress));
+      const particleX = centerX + Math.cos(angle) * distance;
+      const particleY =
+        centerY +
+        Math.sin(angle) * distance * 0.38 +
+        42 * burstProgress * burstProgress;
+      ctx.save();
+      ctx.translate(particleX, particleY);
+      ctx.rotate(angle + burstProgress * 2.4);
+      ctx.globalAlpha = ringOpacity;
+      ctx.fillStyle = index % 3 === 0 ? "#ffffff" : successColor;
+      const particleLength = lerp(isHook ? 34 : 42, 10, burstProgress);
+      ctx.beginPath();
+      ctx.roundRect(-6, -particleLength / 2, 12, particleLength, 6);
+      ctx.fill();
+      ctx.restore();
+    }
+    ctx.restore();
+  }
+}
+
+async function writeEngagementAnimationFrames(
+  ffmpeg: FFmpeg,
+  prefix: string,
+  placement: EngagementPlacement
+) {
   const canvas = document.createElement("canvas");
   canvas.width = OUTPUT_WIDTH;
   canvas.height = OUTPUT_HEIGHT;
@@ -1313,36 +1584,19 @@ async function createHookEngagementPulsePng(kind: "subscribe" | "like") {
     throw new Error("Canvas rendering is unavailable in this browser.");
   }
 
-  ctx.clearRect(0, 0, OUTPUT_WIDTH, OUTPUT_HEIGHT);
-  ctx.textBaseline = "top";
-  ctx.shadowBlur = 38;
+  const subscribeStart = placement === "hook" ? 0.58 : 0.46;
+  const likeStart = placement === "hook" ? 2.1 : 1.64;
+  const animationDuration = likeStart + 1.08;
+  const frameCount = Math.ceil(animationDuration * ENGAGEMENT_FRAME_RATE) + 1;
 
-  if (kind === "subscribe") {
-    ctx.shadowColor = "rgba(255, 51, 78, 0.86)";
-    ctx.fillStyle = "#ff334e";
-    ctx.beginPath();
-    ctx.roundRect(135, 1415, 810, 215, 42);
-    ctx.fill();
-    ctx.textAlign = "center";
-    ctx.shadowBlur = 0;
-    ctx.fillStyle = "#ffffff";
-    ctx.font = '900 72px "Arial Black", Impact, sans-serif';
-    ctx.fillText("SUBSCRIBE", OUTPUT_WIDTH / 2, 1478);
-  } else {
-    ctx.shadowColor = "rgba(51, 167, 255, 0.86)";
-    ctx.fillStyle = "#33a7ff";
-    ctx.beginPath();
-    ctx.roundRect(275, 1625, 530, 175, 38);
-    ctx.fill();
-    ctx.shadowBlur = 0;
-    drawLikeIcon(ctx, 320, 1640, 0.95, "#ffffff");
-    ctx.textAlign = "left";
-    ctx.fillStyle = "#ffffff";
-    ctx.font = '900 60px "Arial Black", Impact, sans-serif';
-    ctx.fillText("LIKED!", 505, 1672);
+  for (let frame = 0; frame < frameCount; frame += 1) {
+    const time = frame / ENGAGEMENT_FRAME_RATE;
+    ctx.clearRect(0, 0, OUTPUT_WIDTH, OUTPUT_HEIGHT);
+    drawAnimatedEngagementButton(ctx, placement, "subscribe", time - subscribeStart);
+    drawAnimatedEngagementButton(ctx, placement, "like", time - likeStart);
+    const frameName = `${prefix}-${String(frame).padStart(3, "0")}.png`;
+    await ffmpeg.writeFile(frameName, await canvasToPngBytes(canvas));
   }
-
-  return canvasToPngBytes(canvas);
 }
 
 async function createEndCardBasePng(accentColor: AccentColor) {
@@ -1405,50 +1659,8 @@ async function createEndCardBasePng(accentColor: AccentColor) {
   ctx.textAlign = "center";
   ctx.fillStyle = "rgba(255, 255, 255, 0.56)";
   ctx.font = '800 34px "Arial", sans-serif';
-  ctx.fillText("VOTE IN THE COMMENTS", OUTPUT_WIDTH / 2, 1625);
-  ctx.fillText("FOR THE NEXT RANKING", OUTPUT_WIDTH / 2, 1670);
-
-  return canvasToPngBytes(canvas);
-}
-
-async function createEndCardPulsePng(kind: "subscribe" | "like") {
-  const canvas = document.createElement("canvas");
-  canvas.width = OUTPUT_WIDTH;
-  canvas.height = OUTPUT_HEIGHT;
-  const ctx = canvas.getContext("2d");
-
-  if (!ctx) {
-    throw new Error("Canvas rendering is unavailable in this browser.");
-  }
-
-  ctx.clearRect(0, 0, OUTPUT_WIDTH, OUTPUT_HEIGHT);
-  ctx.textBaseline = "top";
-  ctx.shadowBlur = 42;
-
-  if (kind === "subscribe") {
-    ctx.shadowColor = "rgba(255, 51, 78, 0.82)";
-    ctx.fillStyle = "#ff334e";
-    ctx.beginPath();
-    ctx.roundRect(125, 980, 830, 260, 50);
-    ctx.fill();
-    ctx.textAlign = "center";
-    ctx.shadowBlur = 0;
-    ctx.fillStyle = "#ffffff";
-    ctx.font = '900 92px "Arial Black", Impact, sans-serif';
-    ctx.fillText("SUBSCRIBE", OUTPUT_WIDTH / 2, 1055);
-  } else {
-    ctx.shadowColor = "rgba(51, 167, 255, 0.82)";
-    ctx.fillStyle = "#33a7ff";
-    ctx.beginPath();
-    ctx.roundRect(245, 1315, 590, 230, 48);
-    ctx.fill();
-    ctx.shadowBlur = 0;
-    drawLikeIcon(ctx, 300, 1360, 1.2, "#ffffff");
-    ctx.textAlign = "left";
-    ctx.fillStyle = "#ffffff";
-    ctx.font = '900 76px "Arial Black", Impact, sans-serif';
-    ctx.fillText("LIKED!", 515, 1385);
-  }
+  ctx.fillText("VOTE IN THE COMMENTS", OUTPUT_WIDTH / 2, 1660);
+  ctx.fillText("FOR THE NEXT RANKING", OUTPUT_WIDTH / 2, 1705);
 
   return canvasToPngBytes(canvas);
 }
@@ -1642,8 +1854,7 @@ async function renderAnimatedHook({
   ffmpeg,
   inputName,
   overlayName,
-  subscribePulseName,
-  likePulseName,
+  engagementPattern,
   segmentName,
   startTimeText,
   durationText,
@@ -1653,29 +1864,22 @@ async function renderAnimatedHook({
   ffmpeg: FFmpeg;
   inputName: string;
   overlayName: string;
-  subscribePulseName: string;
-  likePulseName: string;
+  engagementPattern: string;
   segmentName: string;
   startTimeText: string;
   durationText: string;
   fadeDuration: number;
   fadeOutStart: string;
 }) {
-  const subscribePulse =
-    "between(t\\,0.78\\,1.10)+between(t\\,1.28\\,1.58)";
-  const likePulse =
-    "between(t\\,2.30\\,2.62)+between(t\\,2.82\\,3.12)";
   const videoFilter = [
     `[0:v]setpts=PTS-STARTPTS,scale=${OUTPUT_WIDTH}:${OUTPUT_HEIGHT}:force_original_aspect_ratio=increase,crop=${OUTPUT_WIDTH}:${OUTPUT_HEIGHT},setsar=1,format=rgba[base]`,
     "[1:v]format=rgba[overlay]",
     "[base][overlay]overlay=0:0:format=auto[withOverlay]",
-    "[2:v]format=rgba[subscribePulse]",
-    `[withOverlay][subscribePulse]overlay=0:0:format=auto:enable='${subscribePulse}'[withSubscribe]`,
-    "[3:v]format=rgba[likePulse]",
-    `[withSubscribe][likePulse]overlay=0:0:format=auto:enable='${likePulse}',fade=t=in:st=0:d=${fadeDuration},fade=t=out:st=${fadeOutStart}:d=${fadeDuration},trim=0:${durationText},setpts=PTS-STARTPTS,fps=30,format=yuv420p[v]`
+    "[2:v]setpts=PTS-STARTPTS,format=rgba[engagement]",
+    `[withOverlay][engagement]overlay=0:0:format=auto:eof_action=repeat:repeatlast=1,fade=t=in:st=0:d=${fadeDuration},fade=t=out:st=${fadeOutStart}:d=${fadeDuration},trim=0:${durationText},setpts=PTS-STARTPTS,fps=30,format=yuv420p[v]`
   ].join(";");
   const sourceAudioFilter = `[0:a]atrim=0:${durationText},asetpts=PTS-STARTPTS,apad=pad_dur=${durationText},atrim=0:${durationText},aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo[a]`;
-  const silentAudioFilter = `[4:a]atrim=0:${durationText},asetpts=PTS-STARTPTS,aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo[a]`;
+  const silentAudioFilter = `[3:a]atrim=0:${durationText},asetpts=PTS-STARTPTS,aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo[a]`;
   const outputSettings = [
     "-map",
     "[v]",
@@ -1706,14 +1910,12 @@ async function renderAnimatedHook({
     "1",
     "-i",
     overlayName,
-    "-loop",
-    "1",
+    "-framerate",
+    String(ENGAGEMENT_FRAME_RATE),
+    "-start_number",
+    "0",
     "-i",
-    subscribePulseName,
-    "-loop",
-    "1",
-    "-i",
-    likePulseName
+    engagementPattern
   ];
 
   try {
@@ -1757,29 +1959,21 @@ async function renderAnimatedHook({
 async function renderEndCard({
   ffmpeg,
   baseName,
-  subscribePulseName,
-  likePulseName,
+  engagementPattern,
   segmentName
 }: {
   ffmpeg: FFmpeg;
   baseName: string;
-  subscribePulseName: string;
-  likePulseName: string;
+  engagementPattern: string;
   segmentName: string;
 }) {
   const durationText = END_CARD_DURATION_SECONDS.toFixed(2);
   const fadeOutStart = (END_CARD_DURATION_SECONDS - 0.35).toFixed(2);
-  const subscribePulse =
-    "between(t\\,0.55\\,0.86)+between(t\\,1.02\\,1.30)";
-  const likePulse =
-    "between(t\\,1.72\\,2.08)+between(t\\,2.28\\,2.58)";
   const filter = [
     `[0:v]setpts=PTS-STARTPTS,scale=${OUTPUT_WIDTH}:${OUTPUT_HEIGHT},format=rgba[base]`,
-    "[1:v]setpts=PTS-STARTPTS,format=rgba[subscribePulse]",
-    `[base][subscribePulse]overlay=0:0:format=auto:enable='${subscribePulse}'[withSubscribe]`,
-    "[2:v]setpts=PTS-STARTPTS,format=rgba[likePulse]",
-    `[withSubscribe][likePulse]overlay=0:0:format=auto:enable='${likePulse}',fade=t=in:st=0:d=0.18,fade=t=out:st=${fadeOutStart}:d=0.35,trim=0:${durationText},setpts=PTS-STARTPTS,fps=30,format=yuv420p[v]`,
-    `[3:a]atrim=0:${durationText},asetpts=PTS-STARTPTS,aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo[a]`
+    "[1:v]setpts=PTS-STARTPTS,format=rgba[engagement]",
+    `[base][engagement]overlay=0:0:format=auto:eof_action=repeat:repeatlast=1,fade=t=in:st=0:d=0.18,fade=t=out:st=${fadeOutStart}:d=0.35,trim=0:${durationText},setpts=PTS-STARTPTS,fps=30,format=yuv420p[v]`,
+    `[2:a]atrim=0:${durationText},asetpts=PTS-STARTPTS,aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo[a]`
   ].join(";");
 
   await ffmpeg.exec([
@@ -1788,14 +1982,12 @@ async function renderEndCard({
     "1",
     "-i",
     baseName,
-    "-loop",
-    "1",
+    "-framerate",
+    String(ENGAGEMENT_FRAME_RATE),
+    "-start_number",
+    "0",
     "-i",
-    subscribePulseName,
-    "-loop",
-    "1",
-    "-i",
-    likePulseName,
+    engagementPattern,
     "-f",
     "lavfi",
     "-t",
@@ -2583,11 +2775,11 @@ export default function Home() {
       const teaser = hookTeaserLines(activeTitle);
       const accentColor = randomAccentColor();
       const sfxName = "transition-boom.mp3";
-      const hookSubscribePulseName = "hook-subscribe.png";
-      const hookLikePulseName = "hook-like.png";
+      const hookEngagementPrefix = "hook-engagement";
+      const hookEngagementPattern = `${hookEngagementPrefix}-%03d.png`;
       const endCardBaseName = "end-card-base.png";
-      const endCardSubscribeName = "end-card-subscribe.png";
-      const endCardLikeName = "end-card-like.png";
+      const endCardEngagementPrefix = "end-card-engagement";
+      const endCardEngagementPattern = `${endCardEngagementPrefix}-%03d.png`;
       const endCardSegmentName = "segment-end-card.mp4";
 
       setStatusText("Finding opening hook...");
@@ -2621,14 +2813,7 @@ export default function Home() {
         hookOverlayName,
         await createHookOverlayPng(activeTitle, teaser, accentColor)
       );
-      await ffmpeg.writeFile(
-        hookSubscribePulseName,
-        await createHookEngagementPulsePng("subscribe")
-      );
-      await ffmpeg.writeFile(
-        hookLikePulseName,
-        await createHookEngagementPulsePng("like")
-      );
+      await writeEngagementAnimationFrames(ffmpeg, hookEngagementPrefix, "hook");
 
       setStatusText("Rendering opening hook...");
 
@@ -2636,8 +2821,7 @@ export default function Home() {
         ffmpeg,
         inputName: hookInputName,
         overlayName: hookOverlayName,
-        subscribePulseName: hookSubscribePulseName,
-        likePulseName: hookLikePulseName,
+        engagementPattern: hookEngagementPattern,
         segmentName: hookSegmentName,
         startTimeText: hookStartTimeText,
         durationText: hookDurationText,
@@ -2701,16 +2885,15 @@ export default function Home() {
       setStatusText("Rendering subscribe end card...");
       setProgress(90);
       await ffmpeg.writeFile(endCardBaseName, await createEndCardBasePng(accentColor));
-      await ffmpeg.writeFile(
-        endCardSubscribeName,
-        await createEndCardPulsePng("subscribe")
+      await writeEngagementAnimationFrames(
+        ffmpeg,
+        endCardEngagementPrefix,
+        "end"
       );
-      await ffmpeg.writeFile(endCardLikeName, await createEndCardPulsePng("like"));
       await renderEndCard({
         ffmpeg,
         baseName: endCardBaseName,
-        subscribePulseName: endCardSubscribeName,
-        likePulseName: endCardLikeName,
+        engagementPattern: endCardEngagementPattern,
         segmentName: endCardSegmentName
       });
       segmentNames.push(endCardSegmentName);

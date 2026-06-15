@@ -1037,6 +1037,159 @@ function videoFilters({
   ].join(";");
 }
 
+function clamp01(value) {
+  return Math.min(1, Math.max(0, value));
+}
+
+function easeOutCubic(value) {
+  const inverse = 1 - clamp01(value);
+  return 1 - inverse * inverse * inverse;
+}
+
+function easeInOutCubic(value) {
+  const progress = clamp01(value);
+  return progress < 0.5
+    ? 4 * progress * progress * progress
+    : 1 - Math.pow(-2 * progress + 2, 3) / 2;
+}
+
+function interpolate(start, end, progress) {
+  return start + (end - start) * progress;
+}
+
+function mixFfmpegColor(from, to, progress) {
+  const amount = clamp01(progress);
+  const fromValue = Number.parseInt(from.slice(2), 16);
+  const toValue = Number.parseInt(to.slice(2), 16);
+  const channels = [16, 8, 0].map((shift) =>
+    Math.round(
+      interpolate((fromValue >> shift) & 255, (toValue >> shift) & 255, amount)
+    )
+  );
+  return `0x${channels.map((channel) => channel.toString(16).padStart(2, "0")).join("")}`;
+}
+
+function engagementAnimationFilters({
+  startTime,
+  kind,
+  base,
+  settled,
+  fontSize
+}) {
+  const frameRate = 30;
+  const animationSeconds = 0.86;
+  const frameCount = Math.ceil(animationSeconds * frameRate);
+  const successColor = kind === "subscribe" ? "0x12b968" : "0x258ee9";
+  const pressColor = kind === "subscribe" ? "0xbd1731" : "0x176da8";
+  const filters = [];
+
+  for (let frame = 0; frame < frameCount; frame += 1) {
+    const localTime = (frame + 0.5) / frameRate;
+    const pressProgress = clamp01(localTime / 0.22);
+    const releaseProgress = clamp01((localTime - 0.22) / 0.52);
+    const successProgress = easeInOutCubic((localTime - 0.17) / 0.32);
+    const boxProgress = easeOutCubic((localTime - 0.18) / 0.48);
+    const scale =
+      localTime < 0.22
+        ? interpolate(1, 0.88, easeOutCubic(pressProgress))
+        : 1 -
+          0.12 *
+            Math.exp(-5.5 * releaseProgress) *
+            Math.cos(releaseProgress * Math.PI * 3);
+    const centerX = interpolate(
+      base.x + base.width / 2,
+      settled.x + settled.width / 2,
+      boxProgress
+    );
+    const centerY = interpolate(
+      base.y + base.height / 2,
+      settled.y + settled.height / 2,
+      boxProgress
+    );
+    const width = Math.round(interpolate(base.width, settled.width, boxProgress) * scale);
+    const height = Math.round(interpolate(base.height, settled.height, boxProgress) * scale);
+    const x = Math.round(centerX - width / 2);
+    const y = Math.round(centerY - height / 2);
+    const enableStart = (startTime + frame / frameRate).toFixed(3);
+    const enableEnd = (startTime + (frame + 1) / frameRate).toFixed(3);
+    const enable = `between(t\\,${enableStart}\\,${enableEnd})`;
+    const color = mixFfmpegColor(pressColor, successColor, successProgress);
+    const label =
+      kind === "subscribe"
+        ? successProgress >= 0.5
+          ? "SUBSCRIBED!"
+          : "SUBSCRIBE"
+        : successProgress >= 0.5
+          ? "LIKED!"
+          : "LIKE";
+
+    filters.push(
+      `drawbox=x=${x}:y=${y}:w=${width}:h=${height}:color=${color}:t=fill:enable='${enable}'`,
+      drawText({
+        text: label,
+        x: "(w-text_w)/2",
+        y: Math.round(centerY - fontSize / 2),
+        size: Math.round(fontSize * scale),
+        color: "white",
+        border: 3,
+        enable
+      })
+    );
+
+    const burstProgress = clamp01((localTime - 0.24) / 0.62);
+    if (frame % 2 === 0 && burstProgress > 0 && burstProgress < 1) {
+      const ringOpacity = Math.pow(1 - burstProgress, 1.45);
+      const expansion = interpolate(14, 96, easeOutCubic(burstProgress));
+      const ringX = Math.round(centerX - width / 2 - expansion);
+      const ringY = Math.round(centerY - height / 2 - expansion * 0.55);
+      const ringWidth = Math.round(width + expansion * 2);
+      const ringHeight = Math.round(height + expansion * 1.1);
+      filters.push(
+        `drawbox=x=${ringX}:y=${ringY}:w=${ringWidth}:h=${ringHeight}:color=${successColor}@${ringOpacity.toFixed(2)}:t=8:enable='${enable}'`
+      );
+
+      const particleCount = 8;
+      for (let index = 0; index < particleCount; index += 1) {
+        const angle = (Math.PI * 2 * index) / particleCount - Math.PI / 2;
+        const distance = interpolate(width * 0.48, width * 0.72, easeOutCubic(burstProgress));
+        const particleX = Math.round(centerX + Math.cos(angle) * distance);
+        const particleY = Math.round(
+          centerY +
+            Math.sin(angle) * distance * 0.38 +
+            42 * burstProgress * burstProgress
+        );
+        const particleLength = Math.max(8, Math.round(interpolate(38, 10, burstProgress)));
+        const horizontal = Math.abs(Math.cos(angle)) > 0.7;
+        filters.push(
+          `drawbox=x=${particleX - (horizontal ? particleLength / 2 : 6)}:y=${
+            particleY - (horizontal ? 6 : particleLength / 2)
+          }:w=${horizontal ? particleLength : 12}:h=${
+            horizontal ? 12 : particleLength
+          }:color=${index % 3 === 0 ? "white" : successColor}@${ringOpacity.toFixed(
+            2
+          )}:t=fill:enable='${enable}'`
+        );
+      }
+    }
+  }
+
+  const settledEnable = `gte(t\\,${(startTime + animationSeconds).toFixed(2)})`;
+  filters.push(
+    `drawbox=x=${settled.x}:y=${settled.y}:w=${settled.width}:h=${settled.height}:color=${successColor}:t=fill:enable='${settledEnable}'`,
+    drawText({
+      text: kind === "subscribe" ? "SUBSCRIBED!" : "LIKED!",
+      x: "(w-text_w)/2",
+      y: Math.round(settled.y + settled.height / 2 - fontSize / 2),
+      size: fontSize,
+      color: "white",
+      border: 3,
+      enable: settledEnable
+    })
+  );
+
+  return filters;
+}
+
 function hookVideoFilters({
   accentColor,
   title,
@@ -1046,10 +1199,6 @@ function hookVideoFilters({
   teaser
 }) {
   const titleLayout = titleTextLayout(title);
-  const subscribePulse =
-    "between(t\\,0.78\\,1.10)+between(t\\,1.28\\,1.58)";
-  const likePulse =
-    "between(t\\,2.30\\,2.62)+between(t\\,2.82\\,3.12)";
   const filters = [
     "setpts=PTS-STARTPTS",
     `scale=${OUTPUT_WIDTH}:${OUTPUT_HEIGHT}:force_original_aspect_ratio=increase`,
@@ -1086,24 +1235,21 @@ function hookVideoFilters({
   });
 
   filters.push(
-    "drawbox=x=185:y=1450:w=710:h=145:color=0xff334e:t=fill",
+    "drawbox=x=185:y=1420:w=710:h=145:color=0xff334e:t=fill",
     drawText({
       text: "SUBSCRIBE",
       x: "(w-text_w)/2",
-      y: 1490,
+      y: 1460,
       size: 58,
       color: "white",
       border: 3
     }),
-    `drawbox=x=135:y=1415:w=810:h=215:color=0xff334e:t=fill:enable='${subscribePulse}'`,
-    drawText({
-      text: "SUBSCRIBE",
-      x: "(w-text_w)/2",
-      y: 1478,
-      size: 72,
-      color: "white",
-      border: 3,
-      enable: subscribePulse
+    ...engagementAnimationFilters({
+      startTime: 0.58,
+      kind: "subscribe",
+      base: { x: 185, y: 1420, width: 710, height: 145 },
+      settled: { x: 165, y: 1405, width: 750, height: 175 },
+      fontSize: 54
     }),
     "drawbox=x=325:y=1650:w=430:h=120:color=white@0.14:t=fill",
     drawText({
@@ -1114,15 +1260,12 @@ function hookVideoFilters({
       color: "white",
       border: 3
     }),
-    `drawbox=x=275:y=1625:w=530:h=175:color=0x33a7ff:t=fill:enable='${likePulse}'`,
-    drawText({
-      text: "LIKED!",
-      x: "(w-text_w)/2",
-      y: 1672,
-      size: 60,
-      color: "white",
-      border: 3,
-      enable: likePulse
+    ...engagementAnimationFilters({
+      startTime: 2.1,
+      kind: "like",
+      base: { x: 325, y: 1650, width: 430, height: 120 },
+      settled: { x: 305, y: 1640, width: 470, height: 140 },
+      fontSize: 52
     })
   );
 
@@ -1136,10 +1279,6 @@ function hookVideoFilters({
 function endCardVideoFilters(accentColor) {
   const durationText = END_CARD_DURATION_SECONDS.toFixed(2);
   const fadeOutStart = (END_CARD_DURATION_SECONDS - 0.35).toFixed(2);
-  const subscribePulse =
-    "between(t\\,0.55\\,0.86)+between(t\\,1.02\\,1.30)";
-  const likePulse =
-    "between(t\\,1.72\\,2.08)+between(t\\,2.28\\,2.58)";
   const filters = [
     "format=yuv420p",
     `drawbox=x=0:y=0:w=iw:h=24:color=${accentColor.ffmpeg}:t=fill`,
@@ -1192,15 +1331,12 @@ function endCardVideoFilters(accentColor) {
       color: "white",
       border: 3
     }),
-    `drawbox=x=125:y=980:w=830:h=260:color=0xff334e:t=fill:enable='${subscribePulse}'`,
-    drawText({
-      text: "SUBSCRIBE",
-      x: "(w-text_w)/2",
-      y: 1055,
-      size: 92,
-      color: "white",
-      border: 3,
-      enable: subscribePulse
+    ...engagementAnimationFilters({
+      startTime: 0.46,
+      kind: "subscribe",
+      base: { x: 170, y: 1015, width: 740, height: 190 },
+      settled: { x: 150, y: 995, width: 780, height: 220 },
+      fontSize: 64
     }),
     "drawbox=x=300:y=1355:w=480:h=150:color=white@0.11:t=fill",
     drawText({
@@ -1211,20 +1347,17 @@ function endCardVideoFilters(accentColor) {
       color: "white",
       border: 3
     }),
-    `drawbox=x=245:y=1315:w=590:h=230:color=0x33a7ff:t=fill:enable='${likePulse}'`,
-    drawText({
-      text: "LIKED!",
-      x: "(w-text_w)/2",
-      y: 1380,
-      size: 78,
-      color: "white",
-      border: 3,
-      enable: likePulse
+    ...engagementAnimationFilters({
+      startTime: 1.64,
+      kind: "like",
+      base: { x: 300, y: 1355, width: 480, height: 150 },
+      settled: { x: 275, y: 1335, width: 530, height: 190 },
+      fontSize: 68
     }),
     drawText({
       text: "VOTE IN THE COMMENTS",
       x: "(w-text_w)/2",
-      y: 1625,
+      y: 1660,
       size: 34,
       color: "white@0.60",
       border: 2
@@ -1232,7 +1365,7 @@ function endCardVideoFilters(accentColor) {
     drawText({
       text: "FOR THE NEXT RANKING",
       x: "(w-text_w)/2",
-      y: 1670,
+      y: 1705,
       size: 34,
       color: "white@0.60",
       border: 2
