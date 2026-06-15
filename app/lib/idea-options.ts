@@ -91,7 +91,9 @@ const CREATOR_VALUES = [
   "zerkaa",
   "vikkstar",
   "W2S",
-  "WroeToShaw"
+  "WroeToShaw",
+  "Flight",
+  "FlightReacts"
 ];
 
 const TITLE_VARIANT_VALUES = [
@@ -137,7 +139,7 @@ function creatorGroup(value: string) {
     return "Gaming";
   }
 
-  if (/\b(speed|kai|caseoh|adin|xqc|jynxzi|plaqueboymax|ronaldo|lacy|cinna|jasontheween|duke|agent|yourrage|timthetatman|ludwig|hasanabi|asmongold|zackrawrr|valkyrae|pokimane)\b/i.test(value)) {
+  if (/\b(speed|kai|caseoh|adin|xqc|jynxzi|plaqueboymax|ronaldo|lacy|cinna|jasontheween|duke|agent|yourrage|flight|flightreacts|timthetatman|ludwig|hasanabi|asmongold|zackrawrr|valkyrae|pokimane)\b/i.test(value)) {
     return "Streamers";
   }
 

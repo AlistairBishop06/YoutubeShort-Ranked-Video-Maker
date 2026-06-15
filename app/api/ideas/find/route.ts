@@ -488,6 +488,8 @@ const CREATOR_LABELS: Record<string, string[]> = {
   "duke dennis": ["duke got cooked", "duke lost it", "duke was not ready", "amp cooked duke", "duke chaos"],
   "agent 00": ["agent got cooked", "agent lost it", "amp cooked agent", "agent was not ready", "agent chaos"],
   yourrage: ["rage got cooked", "rage lost it", "chat cooked rage", "rage was not ready", "yourrage chaos"],
+  flight: ["flight crashout", "flight got cooked", "flight lost it", "flight was not ready", "no way flight said that"],
+  flightreacts: ["flight crashout", "flight got cooked", "flight lost it", "flight was not ready", "no way flight said that"],
   chrisnxtdoor: ["chris got cooked", "chris lost it", "amp cooked chris", "chris was not ready", "chris chaos"],
   imdavisss: ["davis got cooked", "davis lost it", "amp cooked davis", "davis was not ready", "davis chaos"],
   rdcworld: ["rdcworld chaos", "mark got cooked", "rdc had them crying", "rdcworld went too far", "the skit got real"],
