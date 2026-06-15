@@ -1046,6 +1046,10 @@ function hookVideoFilters({
   teaser
 }) {
   const titleLayout = titleTextLayout(title);
+  const subscribePulse =
+    "between(t\\,0.78\\,1.10)+between(t\\,1.28\\,1.58)";
+  const likePulse =
+    "between(t\\,2.30\\,2.62)+between(t\\,2.82\\,3.12)";
   const filters = [
     "setpts=PTS-STARTPTS",
     `scale=${OUTPUT_WIDTH}:${OUTPUT_HEIGHT}:force_original_aspect_ratio=increase`,
@@ -1080,6 +1084,47 @@ function hookVideoFilters({
       border: 7
     }));
   });
+
+  filters.push(
+    "drawbox=x=185:y=1450:w=710:h=145:color=0xff334e:t=fill",
+    drawText({
+      text: "SUBSCRIBE",
+      x: "(w-text_w)/2",
+      y: 1490,
+      size: 58,
+      color: "white",
+      border: 3
+    }),
+    `drawbox=x=135:y=1415:w=810:h=215:color=0xff334e:t=fill:enable='${subscribePulse}'`,
+    drawText({
+      text: "SUBSCRIBE",
+      x: "(w-text_w)/2",
+      y: 1478,
+      size: 72,
+      color: "white",
+      border: 3,
+      enable: subscribePulse
+    }),
+    "drawbox=x=325:y=1650:w=430:h=120:color=white@0.14:t=fill",
+    drawText({
+      text: "LIKE",
+      x: "(w-text_w)/2",
+      y: 1682,
+      size: 48,
+      color: "white",
+      border: 3
+    }),
+    `drawbox=x=275:y=1625:w=530:h=175:color=0x33a7ff:t=fill:enable='${likePulse}'`,
+    drawText({
+      text: "LIKED!",
+      x: "(w-text_w)/2",
+      y: 1672,
+      size: 60,
+      color: "white",
+      border: 3,
+      enable: likePulse
+    })
+  );
 
   return [
     `[0:v]${filters.join(",")}[hookBase]`,

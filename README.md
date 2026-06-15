@@ -81,8 +81,9 @@ Each generated video also adds:
 
 1. A per-clip progress bar so each segment feels quick to finish.
 2. One randomized hook teaser like `#1 IS UNREAL`, `THIS GETS WORSE`, or `CHAT WAS NOT READY`.
-3. Generated impact sound effects mixed into the source audio.
-4. A short animated end card after #1 asking viewers to subscribe, like, and vote for the next clips.
+3. Animated subscribe and like prompts beneath the opening hook teaser.
+4. Generated impact sound effects mixed into the source audio.
+5. A short animated end card after #1 asking viewers to subscribe, like, and vote for the next clips.
 4. A large rank reveal flash at the start of each ranked clip.
 
 The candidate finder rejects titles that contain patterns like:

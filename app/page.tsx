@@ -1154,14 +1154,6 @@ async function createOverlayPng(
   return canvasToPngBytes(canvas);
 }
 
-async function createTransparentOverlayPng() {
-  const canvas = document.createElement("canvas");
-  canvas.width = OUTPUT_WIDTH;
-  canvas.height = OUTPUT_HEIGHT;
-
-  return canvasToPngBytes(canvas);
-}
-
 async function createRankRevealPng(rank: number, accentColor: AccentColor) {
   const canvas = document.createElement("canvas");
   canvas.width = OUTPUT_WIDTH;
@@ -1258,6 +1250,25 @@ async function createHookOverlayPng(
     ctx.fillText(line, OUTPUT_WIDTH / 2, y);
   });
 
+  ctx.shadowBlur = 0;
+  ctx.fillStyle = "#ff334e";
+  ctx.beginPath();
+  ctx.roundRect(185, 1450, 710, 145, 32);
+  ctx.fill();
+  ctx.fillStyle = "#ffffff";
+  ctx.font = '900 58px "Arial Black", Impact, sans-serif';
+  ctx.fillText("SUBSCRIBE", OUTPUT_WIDTH / 2, 1490);
+
+  ctx.fillStyle = "rgba(255, 255, 255, 0.14)";
+  ctx.beginPath();
+  ctx.roundRect(325, 1650, 430, 120, 28);
+  ctx.fill();
+  drawLikeIcon(ctx, 365, 1650, 0.72, "#ffffff");
+  ctx.textAlign = "left";
+  ctx.fillStyle = "#ffffff";
+  ctx.font = '900 48px "Arial Black", Impact, sans-serif';
+  ctx.fillText("LIKE", 520, 1682);
+
   return canvasToPngBytes(canvas);
 }
 
@@ -1290,6 +1301,48 @@ function drawLikeIcon(
   ctx.closePath();
   ctx.fill();
   ctx.restore();
+}
+
+async function createHookEngagementPulsePng(kind: "subscribe" | "like") {
+  const canvas = document.createElement("canvas");
+  canvas.width = OUTPUT_WIDTH;
+  canvas.height = OUTPUT_HEIGHT;
+  const ctx = canvas.getContext("2d");
+
+  if (!ctx) {
+    throw new Error("Canvas rendering is unavailable in this browser.");
+  }
+
+  ctx.clearRect(0, 0, OUTPUT_WIDTH, OUTPUT_HEIGHT);
+  ctx.textBaseline = "top";
+  ctx.shadowBlur = 38;
+
+  if (kind === "subscribe") {
+    ctx.shadowColor = "rgba(255, 51, 78, 0.86)";
+    ctx.fillStyle = "#ff334e";
+    ctx.beginPath();
+    ctx.roundRect(135, 1415, 810, 215, 42);
+    ctx.fill();
+    ctx.textAlign = "center";
+    ctx.shadowBlur = 0;
+    ctx.fillStyle = "#ffffff";
+    ctx.font = '900 72px "Arial Black", Impact, sans-serif';
+    ctx.fillText("SUBSCRIBE", OUTPUT_WIDTH / 2, 1478);
+  } else {
+    ctx.shadowColor = "rgba(51, 167, 255, 0.86)";
+    ctx.fillStyle = "#33a7ff";
+    ctx.beginPath();
+    ctx.roundRect(275, 1625, 530, 175, 38);
+    ctx.fill();
+    ctx.shadowBlur = 0;
+    drawLikeIcon(ctx, 320, 1640, 0.95, "#ffffff");
+    ctx.textAlign = "left";
+    ctx.fillStyle = "#ffffff";
+    ctx.font = '900 60px "Arial Black", Impact, sans-serif';
+    ctx.fillText("LIKED!", 505, 1672);
+  }
+
+  return canvasToPngBytes(canvas);
 }
 
 async function createEndCardBasePng(accentColor: AccentColor) {
@@ -1580,6 +1633,122 @@ async function renderSegment({
       outputDurationText,
       "-filter_complex",
       `${videoFilter};${silentAudioFilters}`,
+      ...outputSettings
+    ]);
+  }
+}
+
+async function renderAnimatedHook({
+  ffmpeg,
+  inputName,
+  overlayName,
+  subscribePulseName,
+  likePulseName,
+  segmentName,
+  startTimeText,
+  durationText,
+  fadeDuration,
+  fadeOutStart
+}: {
+  ffmpeg: FFmpeg;
+  inputName: string;
+  overlayName: string;
+  subscribePulseName: string;
+  likePulseName: string;
+  segmentName: string;
+  startTimeText: string;
+  durationText: string;
+  fadeDuration: number;
+  fadeOutStart: string;
+}) {
+  const subscribePulse =
+    "between(t\\,0.78\\,1.10)+between(t\\,1.28\\,1.58)";
+  const likePulse =
+    "between(t\\,2.30\\,2.62)+between(t\\,2.82\\,3.12)";
+  const videoFilter = [
+    `[0:v]setpts=PTS-STARTPTS,scale=${OUTPUT_WIDTH}:${OUTPUT_HEIGHT}:force_original_aspect_ratio=increase,crop=${OUTPUT_WIDTH}:${OUTPUT_HEIGHT},setsar=1,format=rgba[base]`,
+    "[1:v]format=rgba[overlay]",
+    "[base][overlay]overlay=0:0:format=auto[withOverlay]",
+    "[2:v]format=rgba[subscribePulse]",
+    `[withOverlay][subscribePulse]overlay=0:0:format=auto:enable='${subscribePulse}'[withSubscribe]`,
+    "[3:v]format=rgba[likePulse]",
+    `[withSubscribe][likePulse]overlay=0:0:format=auto:enable='${likePulse}',fade=t=in:st=0:d=${fadeDuration},fade=t=out:st=${fadeOutStart}:d=${fadeDuration},trim=0:${durationText},setpts=PTS-STARTPTS,fps=30,format=yuv420p[v]`
+  ].join(";");
+  const sourceAudioFilter = `[0:a]atrim=0:${durationText},asetpts=PTS-STARTPTS,apad=pad_dur=${durationText},atrim=0:${durationText},aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo[a]`;
+  const silentAudioFilter = `[4:a]atrim=0:${durationText},asetpts=PTS-STARTPTS,aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo[a]`;
+  const outputSettings = [
+    "-map",
+    "[v]",
+    "-map",
+    "[a]",
+    "-r",
+    "30",
+    "-c:v",
+    "libx264",
+    "-preset",
+    "ultrafast",
+    "-crf",
+    "24",
+    "-c:a",
+    "aac",
+    "-b:a",
+    "128k",
+    "-ar",
+    "44100",
+    "-ac",
+    "2",
+    "-movflags",
+    "+faststart",
+    segmentName
+  ];
+  const visualInputs = [
+    "-loop",
+    "1",
+    "-i",
+    overlayName,
+    "-loop",
+    "1",
+    "-i",
+    subscribePulseName,
+    "-loop",
+    "1",
+    "-i",
+    likePulseName
+  ];
+
+  try {
+    await ffmpeg.exec([
+      "-y",
+      "-ss",
+      startTimeText,
+      "-i",
+      inputName,
+      ...visualInputs,
+      "-t",
+      durationText,
+      "-filter_complex",
+      `${videoFilter};${sourceAudioFilter}`,
+      ...outputSettings
+    ]);
+  } catch (error) {
+    console.warn("Hook audio could not be rendered; using generated silence.", error);
+    await ffmpeg.exec([
+      "-y",
+      "-ss",
+      startTimeText,
+      "-i",
+      inputName,
+      ...visualInputs,
+      "-f",
+      "lavfi",
+      "-t",
+      durationText,
+      "-i",
+      "anullsrc=channel_layout=stereo:sample_rate=44100",
+      "-t",
+      durationText,
+      "-filter_complex",
+      `${videoFilter};${silentAudioFilter}`,
       ...outputSettings
     ]);
   }
@@ -2414,7 +2583,8 @@ export default function Home() {
       const teaser = hookTeaserLines(activeTitle);
       const accentColor = randomAccentColor();
       const sfxName = "transition-boom.mp3";
-      const blankRevealName = "rank-reveal-blank.png";
+      const hookSubscribePulseName = "hook-subscribe.png";
+      const hookLikePulseName = "hook-like.png";
       const endCardBaseName = "end-card-base.png";
       const endCardSubscribeName = "end-card-subscribe.png";
       const endCardLikeName = "end-card-like.png";
@@ -2446,23 +2616,29 @@ export default function Home() {
       const hookFadeOutStart = Math.max(hookPlan.duration - hookFadeDuration, 0).toFixed(2);
 
       await ffmpeg.writeFile(sfxName, await fetchFile("/api/sfx/boom"));
-      await ffmpeg.writeFile(blankRevealName, await createTransparentOverlayPng());
       await ffmpeg.writeFile(hookInputName, await fetchFile(hookEntry.file));
       await ffmpeg.writeFile(
         hookOverlayName,
         await createHookOverlayPng(activeTitle, teaser, accentColor)
       );
+      await ffmpeg.writeFile(
+        hookSubscribePulseName,
+        await createHookEngagementPulsePng("subscribe")
+      );
+      await ffmpeg.writeFile(
+        hookLikePulseName,
+        await createHookEngagementPulsePng("like")
+      );
 
       setStatusText("Rendering opening hook...");
 
-      await renderSegment({
-        accentColor,
+      await renderAnimatedHook({
         ffmpeg,
         inputName: hookInputName,
         overlayName: hookOverlayName,
-        revealName: blankRevealName,
+        subscribePulseName: hookSubscribePulseName,
+        likePulseName: hookLikePulseName,
         segmentName: hookSegmentName,
-        sfxName: null,
         startTimeText: hookStartTimeText,
         durationText: hookDurationText,
         fadeDuration: hookFadeDuration,
