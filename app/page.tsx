@@ -128,8 +128,10 @@ const OUTPUT_WIDTH = 1080;
 const OUTPUT_HEIGHT = 1920;
 const DEFAULT_DURATION_SECONDS = 15;
 const HOOK_DURATION_SECONDS = 5;
+const END_CARD_DURATION_SECONDS = 3.6;
 const SFX_SAMPLE_RATE = 44100;
 const TRANSITION_SFX_SECONDS = 0.64;
+const SMART_AUDIO_BUCKET_SECONDS = 0.1;
 const AUTO_RUN_INTERVAL_MS = 15 * 60 * 1000;
 const DEFAULT_DAILY_UPLOAD_TIMES = "5am, 7am, 9am, 11am";
 const ACCENT_COLORS: AccentColor[] = [
@@ -801,6 +803,196 @@ async function audioHighlightFromFile(file: File, sourceDuration: number, window
   }
 }
 
+function percentile(values: number[], ratio: number) {
+  if (!values.length) {
+    return 0;
+  }
+
+  const sorted = [...values].sort((a, b) => a - b);
+  return sorted[Math.min(sorted.length - 1, Math.max(0, Math.floor((sorted.length - 1) * ratio)))];
+}
+
+function adaptivePlanFromEnergy(
+  energies: number[],
+  sourceDuration: number,
+  targetDuration: number
+): ClipPlan {
+  const safeSourceDuration = Math.max(0.5, sourceDuration);
+  const safeTargetDuration = Math.min(targetDuration, safeSourceDuration);
+
+  if (!energies.length || safeSourceDuration <= safeTargetDuration + 0.25) {
+    return { start: 0, duration: safeTargetDuration };
+  }
+
+  const bucketSeconds = safeSourceDuration / energies.length;
+  const targetBuckets = Math.max(1, Math.ceil(safeTargetDuration / bucketSeconds));
+  const maxStartBucket = Math.max(0, energies.length - targetBuckets);
+  const prefix = [0];
+
+  for (const energy of energies) {
+    prefix.push(prefix[prefix.length - 1] + energy);
+  }
+
+  let bestStartBucket = 0;
+  let bestScore = -Infinity;
+
+  for (let startBucket = 0; startBucket <= maxStartBucket; startBucket += 1) {
+    const endBucket = Math.min(energies.length, startBucket + targetBuckets);
+    const average = (prefix[endBucket] - prefix[startBucket]) / Math.max(1, endBucket - startBucket);
+    const centerBias = 1 - Math.abs(startBucket / Math.max(1, maxStartBucket) - 0.5) * 0.08;
+    const score = average * centerBias;
+
+    if (score > bestScore) {
+      bestScore = score;
+      bestStartBucket = startBucket;
+    }
+  }
+
+  const smoothEnergy = (bucket: number) => {
+    const start = Math.max(0, bucket - 1);
+    const end = Math.min(energies.length - 1, bucket + 1);
+    let total = 0;
+
+    for (let index = start; index <= end; index += 1) {
+      total += energies[index];
+    }
+
+    return total / Math.max(1, end - start + 1);
+  };
+  const noiseFloor = percentile(energies, 0.2);
+  const typicalEnergy = percentile(energies, 0.65);
+  const quietThreshold = Math.max(0.0015, noiseFloor * 1.8, typicalEnergy * 0.34);
+  const availableExtension = Math.max(0, safeSourceDuration - safeTargetDuration);
+  const maxExtension = Math.min(
+    availableExtension,
+    Math.max(2, Math.min(6, safeTargetDuration * 0.6))
+  );
+  const endExtensionBuckets = Math.floor((maxExtension * 0.7) / bucketSeconds);
+  const startExtensionBuckets = Math.floor((maxExtension * 0.3) / bucketSeconds);
+  const initialEndBucket = Math.min(energies.length, bestStartBucket + targetBuckets);
+  const forwardLimit = Math.min(energies.length, initialEndBucket + endExtensionBuckets);
+  const backwardLimit = Math.max(0, bestStartBucket - startExtensionBuckets);
+
+  const findForwardBoundary = () => {
+    if (initialEndBucket >= energies.length || smoothEnergy(initialEndBucket) <= quietThreshold) {
+      return initialEndBucket;
+    }
+
+    let quietestBucket = initialEndBucket;
+    let quietestEnergy = smoothEnergy(initialEndBucket);
+
+    for (let bucket = initialEndBucket + 1; bucket <= forwardLimit; bucket += 1) {
+      const energy = smoothEnergy(bucket);
+
+      if (energy < quietestEnergy) {
+        quietestBucket = bucket;
+        quietestEnergy = energy;
+      }
+
+      if (
+        energy <= quietThreshold &&
+        smoothEnergy(Math.min(energies.length - 1, bucket + 1)) <= quietThreshold * 1.15
+      ) {
+        return bucket;
+      }
+    }
+
+    return quietestEnergy <= smoothEnergy(initialEndBucket) * 0.72
+      ? quietestBucket
+      : forwardLimit;
+  };
+
+  const findBackwardBoundary = () => {
+    if (bestStartBucket <= 0 || smoothEnergy(bestStartBucket) <= quietThreshold) {
+      return bestStartBucket;
+    }
+
+    let quietestBucket = bestStartBucket;
+    let quietestEnergy = smoothEnergy(bestStartBucket);
+
+    for (let bucket = bestStartBucket - 1; bucket >= backwardLimit; bucket -= 1) {
+      const energy = smoothEnergy(bucket);
+
+      if (energy < quietestEnergy) {
+        quietestBucket = bucket;
+        quietestEnergy = energy;
+      }
+
+      if (
+        energy <= quietThreshold &&
+        smoothEnergy(Math.max(0, bucket - 1)) <= quietThreshold * 1.15
+      ) {
+        return bucket;
+      }
+    }
+
+    return quietestEnergy <= smoothEnergy(bestStartBucket) * 0.72
+      ? quietestBucket
+      : backwardLimit;
+  };
+
+  const start = Math.max(0, findBackwardBoundary() * bucketSeconds);
+  const end = Math.min(safeSourceDuration, findForwardBoundary() * bucketSeconds);
+
+  return {
+    start,
+    duration: Math.min(safeSourceDuration - start, Math.max(safeTargetDuration, end - start))
+  };
+}
+
+async function adaptiveAudioClipPlanFromFile(
+  file: File,
+  sourceDuration: number,
+  targetDuration: number
+) {
+  const AudioContextConstructor =
+    window.AudioContext ||
+    (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+
+  if (!AudioContextConstructor) {
+    return {
+      start: Math.max(0, (sourceDuration - targetDuration) / 2),
+      duration: Math.min(targetDuration, sourceDuration)
+    };
+  }
+
+  const audioContext = new AudioContextConstructor();
+
+  try {
+    const decoded = await audioContext.decodeAudioData(await file.arrayBuffer());
+    const decodedDuration = decoded.duration || sourceDuration;
+    const bucketSamples = Math.max(1, Math.floor(decoded.sampleRate * SMART_AUDIO_BUCKET_SECONDS));
+    const sampleStride = Math.max(1, Math.floor(decoded.sampleRate / 300));
+    const energies: number[] = [];
+
+    for (let bucketStart = 0; bucketStart < decoded.length; bucketStart += bucketSamples) {
+      const bucketEnd = Math.min(decoded.length, bucketStart + bucketSamples);
+      let total = 0;
+      let samples = 0;
+
+      for (let channel = 0; channel < decoded.numberOfChannels; channel += 1) {
+        const data = decoded.getChannelData(channel);
+
+        for (let sample = bucketStart; sample < bucketEnd; sample += sampleStride) {
+          total += data[sample] * data[sample];
+          samples += 1;
+        }
+      }
+
+      energies.push(samples ? Math.sqrt(total / samples) : 0);
+    }
+
+    return adaptivePlanFromEnergy(energies, decodedDuration, targetDuration);
+  } catch {
+    return {
+      start: Math.max(0, (sourceDuration - targetDuration) / 2),
+      duration: Math.min(targetDuration, sourceDuration)
+    };
+  } finally {
+    await audioContext.close();
+  }
+}
+
 async function browserClipPlan(entry: RankingEntry, maxDuration: number, smartHighlights: boolean) {
   if (!smartHighlights || !entry.file) {
     return { start: 0, duration: maxDuration };
@@ -815,9 +1007,7 @@ async function browserClipPlan(entry: RankingEntry, maxDuration: number, smartHi
     return { start: 0, duration: clipDuration };
   }
 
-  const start = await audioHighlightStartFromFile(entry.file, safeSourceDuration, clipDuration);
-
-  return { start, duration: clipDuration };
+  return adaptiveAudioClipPlanFromFile(entry.file, safeSourceDuration, clipDuration);
 }
 
 async function browserHookPlanFromLoudestEntry(entries: RankingEntry[]) {
@@ -1071,6 +1261,145 @@ async function createHookOverlayPng(
   return canvasToPngBytes(canvas);
 }
 
+function drawLikeIcon(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  scale: number,
+  color: string
+) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.scale(scale, scale);
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  ctx.roundRect(0, 42, 26, 66, 8);
+  ctx.fill();
+  ctx.beginPath();
+  ctx.moveTo(34, 46);
+  ctx.lineTo(58, 46);
+  ctx.lineTo(76, 8);
+  ctx.quadraticCurveTo(82, -4, 94, 2);
+  ctx.quadraticCurveTo(102, 6, 99, 20);
+  ctx.lineTo(94, 46);
+  ctx.lineTo(122, 46);
+  ctx.quadraticCurveTo(139, 46, 135, 63);
+  ctx.lineTo(126, 96);
+  ctx.quadraticCurveTo(123, 108, 109, 108);
+  ctx.lineTo(34, 108);
+  ctx.closePath();
+  ctx.fill();
+  ctx.restore();
+}
+
+async function createEndCardBasePng(accentColor: AccentColor) {
+  const canvas = document.createElement("canvas");
+  canvas.width = OUTPUT_WIDTH;
+  canvas.height = OUTPUT_HEIGHT;
+  const ctx = canvas.getContext("2d");
+
+  if (!ctx) {
+    throw new Error("Canvas rendering is unavailable in this browser.");
+  }
+
+  ctx.fillStyle = "#07090f";
+  ctx.fillRect(0, 0, OUTPUT_WIDTH, OUTPUT_HEIGHT);
+  ctx.fillStyle = accentColor.hex;
+  ctx.fillRect(0, 0, OUTPUT_WIDTH, 24);
+  ctx.textAlign = "center";
+  ctx.textBaseline = "top";
+  ctx.lineJoin = "round";
+  ctx.shadowColor = "rgba(0, 0, 0, 0.8)";
+  ctx.shadowBlur = 28;
+  ctx.strokeStyle = "rgba(0, 0, 0, 0.9)";
+  ctx.lineWidth = 10;
+  ctx.fillStyle = "#ffffff";
+  ctx.font = '900 112px "Arial Black", Impact, sans-serif';
+  ctx.strokeText("SUBSCRIBE", OUTPUT_WIDTH / 2, 260);
+  ctx.fillText("SUBSCRIBE", OUTPUT_WIDTH / 2, 260);
+  ctx.font = '900 84px "Arial Black", Impact, sans-serif';
+  ctx.strokeText("TO CHOOSE", OUTPUT_WIDTH / 2, 390);
+  ctx.fillText("TO CHOOSE", OUTPUT_WIDTH / 2, 390);
+  ctx.fillStyle = accentColor.hex;
+  ctx.font = '900 100px "Arial Black", Impact, sans-serif';
+  ctx.strokeText("THE NEXT CLIPS", OUTPUT_WIDTH / 2, 500);
+  ctx.fillText("THE NEXT CLIPS", OUTPUT_WIDTH / 2, 500);
+
+  ctx.shadowBlur = 0;
+  ctx.fillStyle = "rgba(255, 255, 255, 0.76)";
+  ctx.font = '800 38px "Arial", sans-serif';
+  ctx.fillText("YOUR COMMENT COULD BECOME", OUTPUT_WIDTH / 2, 675);
+  ctx.fillText("THE NEXT #1", OUTPUT_WIDTH / 2, 724);
+
+  ctx.fillStyle = "#ff334e";
+  ctx.beginPath();
+  ctx.roundRect(170, 1015, 740, 190, 38);
+  ctx.fill();
+  ctx.fillStyle = "#ffffff";
+  ctx.font = '900 76px "Arial Black", Impact, sans-serif';
+  ctx.fillText("SUBSCRIBE", OUTPUT_WIDTH / 2, 1064);
+
+  ctx.fillStyle = "rgba(255, 255, 255, 0.1)";
+  ctx.beginPath();
+  ctx.roundRect(300, 1355, 480, 150, 34);
+  ctx.fill();
+  drawLikeIcon(ctx, 350, 1375, 0.9, "#ffffff");
+  ctx.textAlign = "left";
+  ctx.fillStyle = "#ffffff";
+  ctx.font = '900 62px "Arial Black", Impact, sans-serif';
+  ctx.fillText("LIKE", 510, 1395);
+
+  ctx.textAlign = "center";
+  ctx.fillStyle = "rgba(255, 255, 255, 0.56)";
+  ctx.font = '800 34px "Arial", sans-serif';
+  ctx.fillText("VOTE IN THE COMMENTS", OUTPUT_WIDTH / 2, 1625);
+  ctx.fillText("FOR THE NEXT RANKING", OUTPUT_WIDTH / 2, 1670);
+
+  return canvasToPngBytes(canvas);
+}
+
+async function createEndCardPulsePng(kind: "subscribe" | "like") {
+  const canvas = document.createElement("canvas");
+  canvas.width = OUTPUT_WIDTH;
+  canvas.height = OUTPUT_HEIGHT;
+  const ctx = canvas.getContext("2d");
+
+  if (!ctx) {
+    throw new Error("Canvas rendering is unavailable in this browser.");
+  }
+
+  ctx.clearRect(0, 0, OUTPUT_WIDTH, OUTPUT_HEIGHT);
+  ctx.textBaseline = "top";
+  ctx.shadowBlur = 42;
+
+  if (kind === "subscribe") {
+    ctx.shadowColor = "rgba(255, 51, 78, 0.82)";
+    ctx.fillStyle = "#ff334e";
+    ctx.beginPath();
+    ctx.roundRect(125, 980, 830, 260, 50);
+    ctx.fill();
+    ctx.textAlign = "center";
+    ctx.shadowBlur = 0;
+    ctx.fillStyle = "#ffffff";
+    ctx.font = '900 92px "Arial Black", Impact, sans-serif';
+    ctx.fillText("SUBSCRIBE", OUTPUT_WIDTH / 2, 1055);
+  } else {
+    ctx.shadowColor = "rgba(51, 167, 255, 0.82)";
+    ctx.fillStyle = "#33a7ff";
+    ctx.beginPath();
+    ctx.roundRect(245, 1315, 590, 230, 48);
+    ctx.fill();
+    ctx.shadowBlur = 0;
+    drawLikeIcon(ctx, 300, 1360, 1.2, "#ffffff");
+    ctx.textAlign = "left";
+    ctx.fillStyle = "#ffffff";
+    ctx.font = '900 76px "Arial Black", Impact, sans-serif';
+    ctx.fillText("LIKED!", 515, 1385);
+  }
+
+  return canvasToPngBytes(canvas);
+}
+
 async function downloadTikTokClip(entry: RankingEntry, sessionId: string | null) {
   const response = await fetch("/api/tiktok/download", {
     method: "POST",
@@ -1254,6 +1583,84 @@ async function renderSegment({
       ...outputSettings
     ]);
   }
+}
+
+async function renderEndCard({
+  ffmpeg,
+  baseName,
+  subscribePulseName,
+  likePulseName,
+  segmentName
+}: {
+  ffmpeg: FFmpeg;
+  baseName: string;
+  subscribePulseName: string;
+  likePulseName: string;
+  segmentName: string;
+}) {
+  const durationText = END_CARD_DURATION_SECONDS.toFixed(2);
+  const fadeOutStart = (END_CARD_DURATION_SECONDS - 0.35).toFixed(2);
+  const subscribePulse =
+    "between(t\\,0.55\\,0.86)+between(t\\,1.02\\,1.30)";
+  const likePulse =
+    "between(t\\,1.72\\,2.08)+between(t\\,2.28\\,2.58)";
+  const filter = [
+    `[0:v]setpts=PTS-STARTPTS,scale=${OUTPUT_WIDTH}:${OUTPUT_HEIGHT},format=rgba[base]`,
+    "[1:v]setpts=PTS-STARTPTS,format=rgba[subscribePulse]",
+    `[base][subscribePulse]overlay=0:0:format=auto:enable='${subscribePulse}'[withSubscribe]`,
+    "[2:v]setpts=PTS-STARTPTS,format=rgba[likePulse]",
+    `[withSubscribe][likePulse]overlay=0:0:format=auto:enable='${likePulse}',fade=t=in:st=0:d=0.18,fade=t=out:st=${fadeOutStart}:d=0.35,trim=0:${durationText},setpts=PTS-STARTPTS,fps=30,format=yuv420p[v]`,
+    `[3:a]atrim=0:${durationText},asetpts=PTS-STARTPTS,aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo[a]`
+  ].join(";");
+
+  await ffmpeg.exec([
+    "-y",
+    "-loop",
+    "1",
+    "-i",
+    baseName,
+    "-loop",
+    "1",
+    "-i",
+    subscribePulseName,
+    "-loop",
+    "1",
+    "-i",
+    likePulseName,
+    "-f",
+    "lavfi",
+    "-t",
+    durationText,
+    "-i",
+    "anullsrc=channel_layout=stereo:sample_rate=44100",
+    "-t",
+    durationText,
+    "-filter_complex",
+    filter,
+    "-map",
+    "[v]",
+    "-map",
+    "[a]",
+    "-r",
+    "30",
+    "-c:v",
+    "libx264",
+    "-preset",
+    "ultrafast",
+    "-crf",
+    "24",
+    "-c:a",
+    "aac",
+    "-b:a",
+    "128k",
+    "-ar",
+    "44100",
+    "-ac",
+    "2",
+    "-movflags",
+    "+faststart",
+    segmentName
+  ]);
 }
 
 export default function Home() {
@@ -2008,6 +2415,10 @@ export default function Home() {
       const accentColor = randomAccentColor();
       const sfxName = "transition-boom.mp3";
       const blankRevealName = "rank-reveal-blank.png";
+      const endCardBaseName = "end-card-base.png";
+      const endCardSubscribeName = "end-card-subscribe.png";
+      const endCardLikeName = "end-card-like.png";
+      const endCardSegmentName = "segment-end-card.mp4";
 
       setStatusText("Finding opening hook...");
       setProgress(20);
@@ -2070,9 +2481,6 @@ export default function Home() {
         const revealName = `rank-reveal-${entry.rank}.png`;
         const segmentName = `segment-${index}.mp4`;
 
-        setStatusText(`Rendering #${entry.rank}...`);
-        setProgress(38 + Math.round((index / RANK_COUNT) * 52));
-
         const clipPlan = rankedClipPlans.get(entry.rank);
 
         if (!clipPlan) {
@@ -2083,6 +2491,9 @@ export default function Home() {
         const startTimeText = clipPlan.start.toFixed(2);
         const fadeDuration = Math.min(0.25, clipPlan.duration / 4);
         const fadeOutStart = Math.max(clipPlan.duration - fadeDuration, 0).toFixed(2);
+
+        setStatusText(`Rendering #${entry.rank} (${durationText}s)...`);
+        setProgress(38 + Math.round((index / RANK_COUNT) * 52));
 
         await ffmpeg.writeFile(inputName, await fetchFile(entry.file));
         await ffmpeg.writeFile(
@@ -2111,8 +2522,25 @@ export default function Home() {
         segmentNames.push(segmentName);
       }
 
+      setStatusText("Rendering subscribe end card...");
+      setProgress(90);
+      await ffmpeg.writeFile(endCardBaseName, await createEndCardBasePng(accentColor));
+      await ffmpeg.writeFile(
+        endCardSubscribeName,
+        await createEndCardPulsePng("subscribe")
+      );
+      await ffmpeg.writeFile(endCardLikeName, await createEndCardPulsePng("like"));
+      await renderEndCard({
+        ffmpeg,
+        baseName: endCardBaseName,
+        subscribePulseName: endCardSubscribeName,
+        likePulseName: endCardLikeName,
+        segmentName: endCardSegmentName
+      });
+      segmentNames.push(endCardSegmentName);
+
       setStatusText("Stitching final MP4...");
-      setProgress(92);
+      setProgress(94);
 
       const concatList = segmentNames
         .map((segmentName) => `file '${escapeConcatPath(segmentName)}'`)
@@ -2540,7 +2968,7 @@ export default function Home() {
             </label>
 
             <label className="field">
-              <span>Seconds per clip</span>
+              <span>{smartHighlights ? "Target seconds per clip" : "Seconds per clip"}</span>
               <input
                 type="number"
                 min={2}

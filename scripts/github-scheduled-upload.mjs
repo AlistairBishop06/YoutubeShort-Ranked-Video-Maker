@@ -14,8 +14,10 @@ const OUTPUT_WIDTH = 1080;
 const OUTPUT_HEIGHT = 1920;
 const DEFAULT_DURATION_SECONDS = 15;
 const HOOK_DURATION_SECONDS = 5;
+const END_CARD_DURATION_SECONDS = 3.6;
 const SFX_SAMPLE_RATE = 44100;
 const TRANSITION_SFX_SECONDS = 0.64;
+const SMART_AUDIO_BUCKET_SECONDS = 0.1;
 const DEFAULT_WINDOW_MINUTES = 15;
 const ACCENT_COLORS = [
   { ffmpeg: "0x39ff88" },
@@ -676,6 +678,176 @@ async function audioHighlight(inputPath, sourceDuration, windowSeconds) {
   }
 }
 
+function percentile(values, ratio) {
+  if (!values.length) {
+    return 0;
+  }
+
+  const sorted = [...values].sort((a, b) => a - b);
+  return sorted[Math.min(sorted.length - 1, Math.max(0, Math.floor((sorted.length - 1) * ratio)))];
+}
+
+function adaptivePlanFromEnergy(energies, sourceDuration, targetDuration) {
+  const safeSourceDuration = Math.max(0.5, sourceDuration);
+  const safeTargetDuration = Math.min(targetDuration, safeSourceDuration);
+
+  if (!energies.length || safeSourceDuration <= safeTargetDuration + 0.25) {
+    return { start: 0, duration: safeTargetDuration };
+  }
+
+  const bucketSeconds = safeSourceDuration / energies.length;
+  const targetBuckets = Math.max(1, Math.ceil(safeTargetDuration / bucketSeconds));
+  const maxStartBucket = Math.max(0, energies.length - targetBuckets);
+  const prefix = [0];
+
+  for (const energy of energies) {
+    prefix.push(prefix[prefix.length - 1] + energy);
+  }
+
+  let bestStartBucket = 0;
+  let bestScore = -Infinity;
+
+  for (let startBucket = 0; startBucket <= maxStartBucket; startBucket += 1) {
+    const endBucket = Math.min(energies.length, startBucket + targetBuckets);
+    const average = (prefix[endBucket] - prefix[startBucket]) / Math.max(1, endBucket - startBucket);
+    const centerBias = 1 - Math.abs(startBucket / Math.max(1, maxStartBucket) - 0.5) * 0.08;
+    const score = average * centerBias;
+
+    if (score > bestScore) {
+      bestScore = score;
+      bestStartBucket = startBucket;
+    }
+  }
+
+  const smoothEnergy = (bucket) => {
+    const safeBucket = Math.min(energies.length - 1, Math.max(0, bucket));
+    const start = Math.max(0, safeBucket - 1);
+    const end = Math.min(energies.length - 1, safeBucket + 1);
+    let total = 0;
+
+    for (let index = start; index <= end; index += 1) {
+      total += energies[index];
+    }
+
+    return total / Math.max(1, end - start + 1);
+  };
+  const noiseFloor = percentile(energies, 0.2);
+  const typicalEnergy = percentile(energies, 0.65);
+  const quietThreshold = Math.max(0.0015, noiseFloor * 1.8, typicalEnergy * 0.34);
+  const availableExtension = Math.max(0, safeSourceDuration - safeTargetDuration);
+  const maxExtension = Math.min(
+    availableExtension,
+    Math.max(2, Math.min(6, safeTargetDuration * 0.6))
+  );
+  const endExtensionBuckets = Math.floor((maxExtension * 0.7) / bucketSeconds);
+  const startExtensionBuckets = Math.floor((maxExtension * 0.3) / bucketSeconds);
+  const initialEndBucket = Math.min(energies.length, bestStartBucket + targetBuckets);
+  const forwardLimit = Math.min(energies.length, initialEndBucket + endExtensionBuckets);
+  const backwardLimit = Math.max(0, bestStartBucket - startExtensionBuckets);
+
+  const findForwardBoundary = () => {
+    if (initialEndBucket >= energies.length || smoothEnergy(initialEndBucket) <= quietThreshold) {
+      return initialEndBucket;
+    }
+
+    let quietestBucket = initialEndBucket;
+    let quietestEnergy = smoothEnergy(initialEndBucket);
+
+    for (let bucket = initialEndBucket + 1; bucket <= forwardLimit; bucket += 1) {
+      const energy = smoothEnergy(bucket);
+
+      if (energy < quietestEnergy) {
+        quietestBucket = bucket;
+        quietestEnergy = energy;
+      }
+
+      if (
+        energy <= quietThreshold &&
+        smoothEnergy(Math.min(energies.length - 1, bucket + 1)) <= quietThreshold * 1.15
+      ) {
+        return bucket;
+      }
+    }
+
+    return quietestEnergy <= smoothEnergy(initialEndBucket) * 0.72
+      ? quietestBucket
+      : forwardLimit;
+  };
+
+  const findBackwardBoundary = () => {
+    if (bestStartBucket <= 0 || smoothEnergy(bestStartBucket) <= quietThreshold) {
+      return bestStartBucket;
+    }
+
+    let quietestBucket = bestStartBucket;
+    let quietestEnergy = smoothEnergy(bestStartBucket);
+
+    for (let bucket = bestStartBucket - 1; bucket >= backwardLimit; bucket -= 1) {
+      const energy = smoothEnergy(bucket);
+
+      if (energy < quietestEnergy) {
+        quietestBucket = bucket;
+        quietestEnergy = energy;
+      }
+
+      if (
+        energy <= quietThreshold &&
+        smoothEnergy(Math.max(0, bucket - 1)) <= quietThreshold * 1.15
+      ) {
+        return bucket;
+      }
+    }
+
+    return quietestEnergy <= smoothEnergy(bestStartBucket) * 0.72
+      ? quietestBucket
+      : backwardLimit;
+  };
+
+  const start = Math.max(0, findBackwardBoundary() * bucketSeconds);
+  const end = Math.min(safeSourceDuration, findForwardBoundary() * bucketSeconds);
+
+  return {
+    start,
+    duration: Math.min(safeSourceDuration - start, Math.max(safeTargetDuration, end - start))
+  };
+}
+
+async function adaptiveAudioClipPlan(inputPath, sourceDuration, targetDuration) {
+  try {
+    const { stdout } = await execFileAsync(
+      "ffmpeg",
+      ["-v", "error", "-i", inputPath, "-vn", "-ac", "1", "-ar", "16000", "-f", "s16le", "pipe:1"],
+      { encoding: "buffer", maxBuffer: 1024 * 1024 * 16 }
+    );
+    const sampleRate = 16000;
+    const sampleCount = Math.floor(stdout.length / 2);
+    const bucketSamples = Math.max(1, Math.floor(sampleRate * SMART_AUDIO_BUCKET_SECONDS));
+    const sampleStride = 80;
+    const energies = [];
+
+    for (let bucketStart = 0; bucketStart < sampleCount; bucketStart += bucketSamples) {
+      const bucketEnd = Math.min(sampleCount, bucketStart + bucketSamples);
+      let total = 0;
+      let samples = 0;
+
+      for (let sample = bucketStart; sample < bucketEnd; sample += sampleStride) {
+        const value = stdout.readInt16LE(sample * 2) / 32768;
+        total += value * value;
+        samples += 1;
+      }
+
+      energies.push(samples ? Math.sqrt(total / samples) : 0);
+    }
+
+    return adaptivePlanFromEnergy(energies, sourceDuration, targetDuration);
+  } catch {
+    return {
+      start: Math.max(0, (sourceDuration - targetDuration) / 2),
+      duration: Math.min(targetDuration, sourceDuration)
+    };
+  }
+}
+
 async function smartClipPlan(inputPath, sourceDurationHint, maxDuration) {
   const measuredDuration = await probeDuration(inputPath);
   const sourceDuration = Math.max(0.5, measuredDuration || sourceDurationHint || maxDuration);
@@ -685,10 +857,7 @@ async function smartClipPlan(inputPath, sourceDurationHint, maxDuration) {
     return { start: 0, duration };
   }
 
-  return {
-    start: await audioHighlightStart(inputPath, sourceDuration, duration),
-    duration
-  };
+  return adaptiveAudioClipPlan(inputPath, sourceDuration, duration);
 }
 
 async function clipPlan(inputPath, sourceDurationHint, maxDuration) {
@@ -919,6 +1088,121 @@ function hookVideoFilters({
   ].join(";");
 }
 
+function endCardVideoFilters(accentColor) {
+  const durationText = END_CARD_DURATION_SECONDS.toFixed(2);
+  const fadeOutStart = (END_CARD_DURATION_SECONDS - 0.35).toFixed(2);
+  const subscribePulse =
+    "between(t\\,0.55\\,0.86)+between(t\\,1.02\\,1.30)";
+  const likePulse =
+    "between(t\\,1.72\\,2.08)+between(t\\,2.28\\,2.58)";
+  const filters = [
+    "format=yuv420p",
+    `drawbox=x=0:y=0:w=iw:h=24:color=${accentColor.ffmpeg}:t=fill`,
+    drawText({
+      text: "SUBSCRIBE",
+      x: "(w-text_w)/2",
+      y: 265,
+      size: 110,
+      color: "white",
+      border: 7
+    }),
+    drawText({
+      text: "TO CHOOSE",
+      x: "(w-text_w)/2",
+      y: 395,
+      size: 84,
+      color: "white",
+      border: 6
+    }),
+    drawText({
+      text: "THE NEXT CLIPS",
+      x: "(w-text_w)/2",
+      y: 505,
+      size: 100,
+      color: accentColor.ffmpeg,
+      border: 8
+    }),
+    drawText({
+      text: "YOUR COMMENT COULD BECOME",
+      x: "(w-text_w)/2",
+      y: 675,
+      size: 38,
+      color: "white@0.78",
+      border: 3
+    }),
+    drawText({
+      text: "THE NEXT #1",
+      x: "(w-text_w)/2",
+      y: 724,
+      size: 38,
+      color: "white@0.78",
+      border: 3
+    }),
+    "drawbox=x=170:y=1015:w=740:h=190:color=0xff334e:t=fill",
+    drawText({
+      text: "SUBSCRIBE",
+      x: "(w-text_w)/2",
+      y: 1065,
+      size: 76,
+      color: "white",
+      border: 3
+    }),
+    `drawbox=x=125:y=980:w=830:h=260:color=0xff334e:t=fill:enable='${subscribePulse}'`,
+    drawText({
+      text: "SUBSCRIBE",
+      x: "(w-text_w)/2",
+      y: 1055,
+      size: 92,
+      color: "white",
+      border: 3,
+      enable: subscribePulse
+    }),
+    "drawbox=x=300:y=1355:w=480:h=150:color=white@0.11:t=fill",
+    drawText({
+      text: "LIKE",
+      x: "(w-text_w)/2",
+      y: 1392,
+      size: 64,
+      color: "white",
+      border: 3
+    }),
+    `drawbox=x=245:y=1315:w=590:h=230:color=0x33a7ff:t=fill:enable='${likePulse}'`,
+    drawText({
+      text: "LIKED!",
+      x: "(w-text_w)/2",
+      y: 1380,
+      size: 78,
+      color: "white",
+      border: 3,
+      enable: likePulse
+    }),
+    drawText({
+      text: "VOTE IN THE COMMENTS",
+      x: "(w-text_w)/2",
+      y: 1625,
+      size: 34,
+      color: "white@0.60",
+      border: 2
+    }),
+    drawText({
+      text: "FOR THE NEXT RANKING",
+      x: "(w-text_w)/2",
+      y: 1670,
+      size: 34,
+      color: "white@0.60",
+      border: 2
+    }),
+    "fade=t=in:st=0:d=0.18",
+    `fade=t=out:st=${fadeOutStart}:d=0.35`,
+    `trim=0:${durationText}`,
+    "setpts=PTS-STARTPTS",
+    "fps=30",
+    "format=yuv420p"
+  ];
+
+  return `[0:v]${filters.join(",")}[v]`;
+}
+
 async function renderSegment({
   accentColor,
   activeEntry,
@@ -1111,6 +1395,55 @@ async function renderHookSegment({
   ]);
 }
 
+async function renderEndCardSegment({ accentColor, outputPath }) {
+  const durationText = END_CARD_DURATION_SECONDS.toFixed(2);
+  const videoFilter = endCardVideoFilters(accentColor);
+  const audioFilter = `[1:a]atrim=0:${durationText},asetpts=PTS-STARTPTS,aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo[a]`;
+
+  await run("ffmpeg", [
+    "-y",
+    "-f",
+    "lavfi",
+    "-t",
+    durationText,
+    "-i",
+    `color=c=0x07090f:s=${OUTPUT_WIDTH}x${OUTPUT_HEIGHT}:r=30:d=${durationText}`,
+    "-f",
+    "lavfi",
+    "-t",
+    durationText,
+    "-i",
+    "anullsrc=channel_layout=stereo:sample_rate=44100",
+    "-t",
+    durationText,
+    "-filter_complex",
+    `${videoFilter};${audioFilter}`,
+    "-map",
+    "[v]",
+    "-map",
+    "[a]",
+    "-r",
+    "30",
+    "-c:v",
+    "libx264",
+    "-preset",
+    "veryfast",
+    "-crf",
+    "24",
+    "-c:a",
+    "aac",
+    "-b:a",
+    "128k",
+    "-ar",
+    "44100",
+    "-ac",
+    "2",
+    "-movflags",
+    "+faststart",
+    outputPath
+  ]);
+}
+
 function concatPath(path) {
   return path.replace(/'/g, "'\\''");
 }
@@ -1157,6 +1490,7 @@ async function renderRankingVideo({ idea, selectedCandidates, workDir }) {
   const hookEntry = loudestHook.entry;
   const hookPlan = loudestHook.plan;
   const hookOutputPath = join(workDir, "segment-hook.mp4");
+  const endCardOutputPath = join(workDir, "segment-end-card.mp4");
 
   for (const entry of orderedEntries) {
     const plan = await clipPlan(entry.inputPath, entry.sourceDuration, duration);
@@ -1201,6 +1535,13 @@ async function renderRankingVideo({ idea, selectedCandidates, workDir }) {
     });
     segmentPaths.push(outputPath);
   }
+
+  console.log("Rendering subscribe end card");
+  await renderEndCardSegment({
+    accentColor,
+    outputPath: endCardOutputPath
+  });
+  segmentPaths.push(endCardOutputPath);
 
   const concatFile = join(workDir, "concat.txt");
   const outputPath = join(workDir, "ranking-short.mp4");

@@ -71,7 +71,7 @@ The app defaults to `Smart highlights` mode.
 In this mode:
 
 1. Short clips play for their actual length instead of being padded with silence.
-2. Long clips are capped by `Seconds per clip`.
+2. `Target seconds per clip` is the preferred duration. The app can extend a clip by a few seconds to finish active speech, laughter, or a punchline at a quieter boundary. In fixed mode, the duration remains exact.
 3. Long clips are analyzed for audio energy, then the highest-energy window is used instead of always starting at `0:00`.
 4. TikToks that look like someone else's ranking, compilation, or repost are filtered out before selection.
 
@@ -82,6 +82,7 @@ Each generated video also adds:
 1. A per-clip progress bar so each segment feels quick to finish.
 2. One randomized hook teaser like `#1 IS UNREAL`, `THIS GETS WORSE`, or `CHAT WAS NOT READY`.
 3. Generated impact sound effects mixed into the source audio.
+4. A short animated end card after #1 asking viewers to subscribe, like, and vote for the next clips.
 4. A large rank reveal flash at the start of each ranked clip.
 
 The candidate finder rejects titles that contain patterns like:
