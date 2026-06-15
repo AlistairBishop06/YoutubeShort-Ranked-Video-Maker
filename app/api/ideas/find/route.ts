@@ -266,7 +266,9 @@ const CREATOR_NAMES = [
   "zerkaa",
   "vikkstar",
   "W2S",
-  "WroeToShaw"
+  "WroeToShaw",
+  "Flight",
+  "FlightReacts"
 ];
 
 const CREATOR_VARIANTS = [
