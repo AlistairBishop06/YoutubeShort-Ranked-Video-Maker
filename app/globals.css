@@ -849,6 +849,31 @@ h2 {
   flex-wrap: wrap;
 }
 
+.reddit-source-filter {
+  width: 100%;
+}
+
+.reddit-filter-save {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border-top: 1px solid var(--line);
+  padding-top: 12px;
+}
+
+.reddit-filter-save > span {
+  min-width: 0;
+  color: var(--muted);
+  font-size: 0.76rem;
+  font-weight: 800;
+  line-height: 1.35;
+}
+
+.reddit-filter-save .compact-button {
+  flex: 0 0 auto;
+}
+
 .source-chip {
   border: 1px solid rgba(57, 255, 136, 0.38);
   border-radius: 999px;
@@ -1326,6 +1351,10 @@ h2 {
 
   .reddit-source-actions .secondary-button {
     flex: 1;
+  }
+
+  .reddit-filter-save {
+    display: grid;
   }
 
   .panel-heading {

@@ -496,11 +496,14 @@ UPLOAD_SCHEDULE_TIMES=05:00,07:00,09:00,11:00
 UPLOAD_SCHEDULE_TIMEZONE=your_local_timezone
 UPLOAD_IDEA_CREATOR_IDS=selected_creator_ids
 UPLOAD_IDEA_TITLE_IDS=selected_title_style_ids
+UPLOAD_STORY_SUBREDDIT_IDS=selected_subreddit_ids
 ```
 
 You do not need to create those variables manually. If they are missing, the app will create them when you click `Save GitHub Schedule`, as long as `GITHUB_SCHEDULE_TOKEN` has the repository `Variables: Read and write` permission.
 
 The `UPLOAD_IDEA_CREATOR_IDS` and `UPLOAD_IDEA_TITLE_IDS` variables come from the `Search filters` checkbox dropdown in the app. GitHub Actions uses them for closed-tab uploads, so scheduled videos follow the same creator and title-style choices you saved.
+
+`UPLOAD_STORY_SUBREDDIT_IDS` comes from the `Story sources` checkbox dropdown in Reddit Story mode. Click `Save for GitHub runs` in that dropdown, or use `Save GitHub Schedule`, to make scheduled story videos use those subreddit choices.
 
 The workflow also writes this variable after a successful scheduled upload:
 

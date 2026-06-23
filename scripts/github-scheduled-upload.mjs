@@ -529,8 +529,10 @@ async function findRedditStory() {
     .split(",")
     .map((id) => id.trim())
     .filter(Boolean);
+  const subredditIds = parseIdInput(process.env.UPLOAD_STORY_SUBREDDIT_IDS);
   const url = new URL(`${appBaseUrl}/api/reddit/story`);
   url.searchParams.set("excludeIds", excludeIds.join(","));
+  url.searchParams.set("subredditIds", subredditIds.join(","));
   const response = await fetch(url, {
     cache: "no-store",
     signal: AbortSignal.timeout(30000)

@@ -31,6 +31,11 @@ import {
   TITLE_SEARCH_OPTIONS,
   normalizeIdeaSearchSettings
 } from "./lib/idea-options";
+import {
+  DEFAULT_REDDIT_STORY_SETTINGS,
+  REDDIT_SUBREDDIT_OPTIONS,
+  normalizeRedditStorySettings
+} from "./lib/reddit-options";
 
 type RankingEntry = {
   rank: number;
@@ -93,6 +98,9 @@ type GitHubScheduleStatus = {
     ideaSearch?: {
       creatorIds: string[];
       titleIds: string[];
+    };
+    redditStory?: {
+      subredditIds: string[];
     };
     times: string[];
     timezone: string;
@@ -2521,6 +2529,10 @@ export default function Home() {
   const [ideaSearchOpen, setIdeaSearchOpen] = useState(false);
   const [ideaCreatorIds, setIdeaCreatorIds] = useState<string[]>(DEFAULT_IDEA_SEARCH_SETTINGS.creatorIds);
   const [ideaTitleIds, setIdeaTitleIds] = useState<string[]>(DEFAULT_IDEA_SEARCH_SETTINGS.titleIds);
+  const [redditSourceOpen, setRedditSourceOpen] = useState(false);
+  const [redditSubredditIds, setRedditSubredditIds] = useState<string[]>(
+    DEFAULT_REDDIT_STORY_SETTINGS.subredditIds
+  );
   const [redditUrl, setRedditUrl] = useState("");
   const [redditTitle, setRedditTitle] = useState("The Most Awkward Thing That Happened at Work");
   const [redditStory, setRedditStory] = useState("");
@@ -2582,12 +2594,20 @@ export default function Home() {
       }),
     [ideaCreatorIds, ideaTitleIds]
   );
+  const selectedRedditStorySettings = useMemo(
+    () => normalizeRedditStorySettings({ subredditIds: redditSubredditIds }),
+    [redditSubredditIds]
+  );
   const ideaSearchError = !ideaCreatorIds.length
     ? "Select at least one creator."
     : !ideaTitleIds.length
       ? "Select at least one title style."
       : "";
   const ideaSearchSummary = `${ideaCreatorIds.length} creators - ${ideaTitleIds.length} titles`;
+  const redditSourceError = redditSubredditIds.length ? "" : "Select at least one subreddit.";
+  const redditSourceSummary = `${redditSubredditIds.length} subreddit${
+    redditSubredditIds.length === 1 ? "" : "s"
+  }`;
   const redditCharacterCount = useMemo(
     () => narrationCharacterCount(redditTitle, redditStory),
     [redditStory, redditTitle]
@@ -2644,6 +2664,11 @@ export default function Home() {
           const savedIdeaSearch = normalizeIdeaSearchSettings(savedSchedule.ideaSearch);
           setIdeaCreatorIds(savedIdeaSearch.creatorIds);
           setIdeaTitleIds(savedIdeaSearch.titleIds);
+        }
+
+        if (savedSchedule?.redditStory) {
+          const savedRedditStory = normalizeRedditStorySettings(savedSchedule.redditStory);
+          setRedditSubredditIds(savedRedditStory.subredditIds);
         }
 
         setGithubScheduleEnabled(Boolean(savedSchedule?.enabled));
@@ -2816,6 +2841,22 @@ export default function Home() {
     updateIdeaSearchIds(kind, []);
   }
 
+  function updateRedditSubredditIds(ids: string[]) {
+    setRedditSubredditIds([...new Set(ids)]);
+    setErrors((current) => {
+      const { redditSource, ...rest } = current;
+      return rest;
+    });
+  }
+
+  function toggleRedditSubreddit(id: string) {
+    updateRedditSubredditIds(
+      redditSubredditIds.includes(id)
+        ? redditSubredditIds.filter((currentId) => currentId !== id)
+        : [...redditSubredditIds, id]
+    );
+  }
+
   async function saveGithubSchedule() {
     if (parsedDailySchedule.error) {
       setErrors((current) => ({ ...current, dailySchedule: parsedDailySchedule.error }));
@@ -2829,10 +2870,16 @@ export default function Home() {
       return;
     }
 
+    if (redditSourceError) {
+      setErrors((current) => ({ ...current, redditSource: redditSourceError }));
+      setGithubScheduleMessage(redditSourceError);
+      return;
+    }
+
     setIsSavingGithubSchedule(true);
     setGithubScheduleMessage("Saving to GitHub Actions...");
     setErrors((current) => {
-      const { dailySchedule, githubSchedule, ideaSearch, ...rest } = current;
+      const { dailySchedule, githubSchedule, ideaSearch, redditSource, ...rest } = current;
       return rest;
     });
 
@@ -2845,6 +2892,9 @@ export default function Home() {
           ideaSearch: {
             creatorIds: selectedIdeaSearch.creatorIds,
             titleIds: selectedIdeaSearch.titleIds
+          },
+          redditStory: {
+            subredditIds: selectedRedditStorySettings.subredditIds
           },
           times: dailyScheduleInput,
           timezone: githubScheduleTimezone
@@ -2863,8 +2913,8 @@ export default function Home() {
       });
       setGithubScheduleMessage(
         payload.schedule?.enabled
-          ? `Saved. GitHub Actions will run at ${payload.schedule.times.join(", ")} ${payload.schedule.timezone} using ${ideaSearchSummary}.`
-          : `Saved. GitHub Actions schedule is disabled. Filters saved for ${ideaSearchSummary}.`
+          ? `Saved. GitHub Actions will run at ${payload.schedule.times.join(", ")} ${payload.schedule.timezone} using ${ideaSearchSummary} and ${redditSourceSummary}.`
+          : `Saved. GitHub Actions schedule is disabled. Filters saved for ${ideaSearchSummary} and ${redditSourceSummary}.`
       );
     } catch (error) {
       const message = error instanceof Error ? error.message : "Could not save GitHub schedule.";
@@ -3116,6 +3166,12 @@ export default function Home() {
       return;
     }
 
+    if (redditSourceError) {
+      setErrors((current) => ({ ...current, redditSource: redditSourceError }));
+      setStatusText("Choose a story source");
+      return;
+    }
+
     setIsFindingRedditIdea(true);
     setStatusText("Finding a Reddit story...");
     setErrors((current) => {
@@ -3124,7 +3180,10 @@ export default function Home() {
     });
 
     try {
-      const response = await fetch("/api/reddit/story", { cache: "no-store" });
+      const query = new URLSearchParams({
+        subredditIds: selectedRedditStorySettings.subredditIds.join(",")
+      });
+      const response = await fetch(`/api/reddit/story?${query}`, { cache: "no-store" });
       const rawPayload = await response.text();
       const payload = rawPayload
         ? (JSON.parse(rawPayload) as {
@@ -4008,7 +4067,10 @@ export default function Home() {
               <button
                 className="secondary-button compact-button"
                 onClick={saveGithubSchedule}
-                disabled={isSavingGithubSchedule || Boolean(parsedDailySchedule.error || ideaSearchError)}
+                disabled={
+                  isSavingGithubSchedule ||
+                  Boolean(parsedDailySchedule.error || ideaSearchError || redditSourceError)
+                }
               >
                 {isSavingGithubSchedule ? <Loader2 size={17} className="spin" /> : <Github size={17} />}
                 Save GitHub Schedule
@@ -4212,12 +4274,100 @@ export default function Home() {
                     type="button"
                     className="secondary-button"
                     onClick={findRedditStoryIdea}
-                    disabled={isFindingRedditIdea || isImportingReddit}
+                    disabled={isFindingRedditIdea || isImportingReddit || Boolean(redditSourceError)}
                   >
                     {isFindingRedditIdea ? <Loader2 size={18} className="spin" /> : <Lightbulb size={18} />}
                     Generate Story Idea
                   </button>
                 </div>
+              </div>
+
+              <div className="idea-filter reddit-source-filter">
+                <button
+                  type="button"
+                  className="filter-toggle"
+                  aria-expanded={redditSourceOpen}
+                  onClick={() => setRedditSourceOpen((current) => !current)}
+                >
+                  <SlidersHorizontal size={18} />
+                  <span>
+                    <strong>Story sources</strong>
+                    <small>
+                      {selectedRedditStorySettings.isCustom
+                        ? redditSourceSummary
+                        : "All subreddits"}
+                    </small>
+                  </span>
+                  <ChevronDown size={18} data-open={redditSourceOpen} />
+                </button>
+
+                {redditSourceOpen ? (
+                  <div className="filter-menu">
+                    <div className="filter-section">
+                      <div className="filter-section-head">
+                        <div>
+                          <strong>Subreddits</strong>
+                          <span>{redditSubredditIds.length} selected</span>
+                        </div>
+                        <div>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              updateRedditSubredditIds(DEFAULT_REDDIT_STORY_SETTINGS.subredditIds)
+                            }
+                          >
+                            All
+                          </button>
+                          <button type="button" onClick={() => updateRedditSubredditIds([])}>
+                            Clear
+                          </button>
+                        </div>
+                      </div>
+
+                      <div className="option-grid option-grid-compact">
+                        {REDDIT_SUBREDDIT_OPTIONS.map((option) => {
+                          const checked = redditSubredditIds.includes(option.id);
+
+                          return (
+                            <label className="option-tile" data-checked={checked} key={option.id}>
+                              <input
+                                type="checkbox"
+                                checked={checked}
+                                onChange={() => toggleRedditSubreddit(option.id)}
+                              />
+                              <span>r/{option.value}</span>
+                              <small>{option.group}</small>
+                            </label>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    {redditSourceError || errors.redditSource ? (
+                      <small className="error-text">{errors.redditSource || redditSourceError}</small>
+                    ) : null}
+
+                    <div className="reddit-filter-save">
+                      <span>{githubScheduleMessage}</span>
+                      <button
+                        type="button"
+                        className="secondary-button compact-button"
+                        onClick={saveGithubSchedule}
+                        disabled={
+                          isSavingGithubSchedule ||
+                          Boolean(parsedDailySchedule.error || ideaSearchError || redditSourceError)
+                        }
+                      >
+                        {isSavingGithubSchedule ? (
+                          <Loader2 size={17} className="spin" />
+                        ) : (
+                          <Github size={17} />
+                        )}
+                        Save for GitHub runs
+                      </button>
+                    </div>
+                  </div>
+                ) : null}
               </div>
 
               <div className="reddit-import-row">
@@ -4331,6 +4481,7 @@ export default function Home() {
                 {errors.dailySchedule ??
                   errors.githubSchedule ??
                   errors.autoRun ??
+                  errors.redditSource ??
                   errors.reddit ??
                   errors.redditStory ??
                   errors.generation ??

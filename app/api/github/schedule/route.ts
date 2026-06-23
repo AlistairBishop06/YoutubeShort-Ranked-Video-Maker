@@ -5,6 +5,12 @@ import {
   parseIdeaSearchIdList,
   type IdeaSearchSettingsInput
 } from "../../../lib/idea-options";
+import {
+  DEFAULT_REDDIT_STORY_SETTINGS,
+  normalizeRedditStorySettings,
+  parseRedditSubredditIdList,
+  type RedditStorySettingsInput
+} from "../../../lib/reddit-options";
 
 export const runtime = "nodejs";
 
@@ -12,6 +18,7 @@ const VARIABLE_NAMES = {
   enabled: "UPLOAD_SCHEDULE_ENABLED",
   ideaCreators: "UPLOAD_IDEA_CREATOR_IDS",
   ideaTitles: "UPLOAD_IDEA_TITLE_IDS",
+  redditSubreddits: "UPLOAD_STORY_SUBREDDIT_IDS",
   lastSlot: "LAST_UPLOAD_SLOT",
   times: "UPLOAD_SCHEDULE_TIMES",
   timezone: "UPLOAD_SCHEDULE_TIMEZONE"
@@ -225,6 +232,7 @@ export async function GET() {
       schedule: {
         enabled: false,
         ideaSearch: DEFAULT_IDEA_SEARCH_SETTINGS,
+        redditStory: DEFAULT_REDDIT_STORY_SETTINGS,
         times: [],
         timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
         lastSlot: ""
@@ -233,17 +241,21 @@ export async function GET() {
   }
 
   try {
-    const [enabled, times, timezone, ideaCreators, ideaTitles] = await Promise.all([
+    const [enabled, times, timezone, ideaCreators, ideaTitles, redditSubreddits] = await Promise.all([
       readOptionalVariable(VARIABLE_NAMES.enabled),
       readOptionalVariable(VARIABLE_NAMES.times),
       readOptionalVariable(VARIABLE_NAMES.timezone),
       readOptionalVariable(VARIABLE_NAMES.ideaCreators),
-      readOptionalVariable(VARIABLE_NAMES.ideaTitles)
+      readOptionalVariable(VARIABLE_NAMES.ideaTitles),
+      readOptionalVariable(VARIABLE_NAMES.redditSubreddits)
     ]);
     const lastSlot = await readOptionalVariable(VARIABLE_NAMES.lastSlot);
     const ideaSearch = normalizeIdeaSearchSettings({
       creatorIds: parseIdeaSearchIdList(ideaCreators),
       titleIds: parseIdeaSearchIdList(ideaTitles)
+    });
+    const redditStory = normalizeRedditStorySettings({
+      subredditIds: parseRedditSubredditIdList(redditSubreddits)
     });
 
     return NextResponse.json({
@@ -254,6 +266,9 @@ export async function GET() {
         ideaSearch: {
           creatorIds: ideaSearch.creatorIds,
           titleIds: ideaSearch.titleIds
+        },
+        redditStory: {
+          subredditIds: redditStory.subredditIds
         },
         times: times.split(",").filter(Boolean),
         timezone: timezone || "UTC",
@@ -272,12 +287,14 @@ export async function POST(request: NextRequest) {
     const body = (await request.json()) as {
       enabled?: boolean;
       ideaSearch?: IdeaSearchSettingsInput;
+      redditStory?: RedditStorySettingsInput;
       times?: string;
       timezone?: string;
     };
     const parsed = parseScheduleInput(body.times ?? "");
     const timezone = assertValidTimeZone(body.timezone || "UTC");
     const ideaSearch = normalizeIdeaSearchSettings(body.ideaSearch);
+    const redditStory = normalizeRedditStorySettings(body.redditStory);
 
     if (parsed.error) {
       return NextResponse.json({ error: parsed.error }, { status: 400 });
@@ -290,6 +307,7 @@ export async function POST(request: NextRequest) {
     await upsertVariable(VARIABLE_NAMES.enabled, body.enabled ? "true" : "false");
     await upsertVariable(VARIABLE_NAMES.ideaCreators, ideaSearch.creatorIds.join(","));
     await upsertVariable(VARIABLE_NAMES.ideaTitles, ideaSearch.titleIds.join(","));
+    await upsertVariable(VARIABLE_NAMES.redditSubreddits, redditStory.subredditIds.join(","));
     await upsertVariable(VARIABLE_NAMES.times, parsed.times.join(","));
     await upsertVariable(VARIABLE_NAMES.timezone, timezone);
 
@@ -300,6 +318,9 @@ export async function POST(request: NextRequest) {
         ideaSearch: {
           creatorIds: ideaSearch.creatorIds,
           titleIds: ideaSearch.titleIds
+        },
+        redditStory: {
+          subredditIds: redditStory.subredditIds
         },
         times: parsed.times,
         timezone

@@ -1,5 +1,9 @@
 import { XMLParser } from "fast-xml-parser";
 import { NextRequest, NextResponse } from "next/server";
+import {
+  normalizeRedditStorySettings,
+  parseRedditSubredditIdList
+} from "../../../lib/reddit-options";
 
 export const runtime = "nodejs";
 export const maxDuration = 20;
@@ -7,16 +11,6 @@ export const maxDuration = 20;
 const MAX_STORY_CHARACTERS = 6000;
 const MIN_IDEA_CHARACTERS = 500;
 const FEED_CACHE_TTL_MS = 30 * 60 * 1000;
-const IDEA_SUBREDDITS = [
-  "confession",
-  "nosleep",
-  "stories",
-  "tifu",
-  "TrueOffMyChest",
-  "pettyrevenge",
-  "LetsNotMeet",
-  "Glitch_in_the_Matrix"
-] as const;
 const STORY_FEEDS = [
   "top/.rss?t=week",
   "top/.rss?t=month",
@@ -300,8 +294,8 @@ function pickStory(stories: RedditStory[], excludedIds: Set<string>) {
   return pool.length ? pool[Math.floor(Math.random() * pool.length)] : null;
 }
 
-async function findRedditStoryIdea(excludedIds = new Set<string>()) {
-  const attempts = [...IDEA_SUBREDDITS]
+async function findRedditStoryIdea(subreddits: string[], excludedIds = new Set<string>()) {
+  const attempts = [...subreddits]
     .sort(() => Math.random() - 0.5)
     .map((subreddit) => ({
       subreddit,
@@ -378,13 +372,18 @@ async function findRedditStoryIdea(excludedIds = new Set<string>()) {
 
 export async function GET(request: NextRequest) {
   try {
+    const storySettings = normalizeRedditStorySettings({
+      subredditIds: parseRedditSubredditIdList(
+        request.nextUrl.searchParams.get("subredditIds") || undefined
+      )
+    });
     const excludedIds = new Set(
       String(request.nextUrl.searchParams.get("excludeIds") || "")
         .split(",")
         .map((id) => id.trim())
         .filter(Boolean)
     );
-    return NextResponse.json(await findRedditStoryIdea(excludedIds));
+    return NextResponse.json(await findRedditStoryIdea(storySettings.subreddits, excludedIds));
   } catch (error) {
     const message = error instanceof Error ? error.message : "Could not find a Reddit story.";
     return NextResponse.json({ error: message }, { status: 502 });
