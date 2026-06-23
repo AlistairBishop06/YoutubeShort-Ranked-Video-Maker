@@ -38,6 +38,26 @@ function cleanTags(value: FormDataEntryValue | null) {
   return tags.length ? tags : ["shorts", "viral", "top 5"];
 }
 
+function isCompleteMp4(bytes: Buffer) {
+  return (
+    bytes.length >= 100_000 &&
+    bytes.indexOf(Buffer.from("ftyp"), 0) >= 0 &&
+    bytes.indexOf(Buffer.from("moov"), 0) >= 0 &&
+    bytes.indexOf(Buffer.from("mdat"), 0) >= 0 &&
+    bytes.indexOf(Buffer.from("vide"), 0) >= 0
+  );
+}
+
+function isCompleteWebm(bytes: Buffer) {
+  return (
+    bytes.length >= 100_000 &&
+    bytes[0] === 0x1a &&
+    bytes[1] === 0x45 &&
+    bytes[2] === 0xdf &&
+    bytes[3] === 0xa3
+  );
+}
+
 export async function GET() {
   const missing = missingConfig();
 
@@ -71,6 +91,17 @@ export async function POST(request: NextRequest) {
   }
 
   const bytes = Buffer.from(await file.arrayBuffer());
+
+  const isMp4 = file.type.startsWith("video/mp4") && isCompleteMp4(bytes);
+  const isWebm = file.type.startsWith("video/webm") && isCompleteWebm(bytes);
+
+  if (!isMp4 && !isWebm) {
+    return NextResponse.json(
+      { error: "The generated video is incomplete or has no playable track. Generate it again." },
+      { status: 400 }
+    );
+  }
+
   const youtube = google.youtube({ version: "v3", auth: youtubeAuth() });
 
   // YouTube uploads require OAuth access to the user's channel. The refresh

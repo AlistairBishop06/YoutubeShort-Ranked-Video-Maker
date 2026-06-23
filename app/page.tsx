@@ -4,15 +4,19 @@ import { FFmpeg } from "@ffmpeg/ffmpeg";
 import { fetchFile } from "@ffmpeg/util";
 import {
   AlertCircle,
+  BookOpen,
   ChevronDown,
   Check,
   Clock,
   Copy,
   Download,
   ExternalLink,
+  Gamepad2,
   Github,
   Lightbulb,
+  ListOrdered,
   Loader2,
+  Mic2,
   Play,
   Search,
   SlidersHorizontal,
@@ -104,6 +108,21 @@ type GenerateVideoOptions = {
   tags?: string[];
 };
 
+type AppMode = "ranking" | "reddit";
+
+type RedditCaption = {
+  text: string;
+  start: number;
+  end: number;
+};
+
+type RedditTtsResponse = {
+  audioBase64: string;
+  captions: RedditCaption[];
+  duration: number;
+  mimeType: string;
+};
+
 type ClipPlan = {
   duration: number;
   start: number;
@@ -134,6 +153,19 @@ const TRANSITION_SFX_SECONDS = 0.64;
 const SMART_AUDIO_BUCKET_SECONDS = 0.1;
 const AUTO_RUN_INTERVAL_MS = 15 * 60 * 1000;
 const DEFAULT_DAILY_UPLOAD_TIMES = "5am, 7am, 9am, 11am";
+const REDDIT_MAX_NARRATION_CHARACTERS = 6000;
+const REDDIT_OUTPUT_WIDTH = 1080;
+const REDDIT_OUTPUT_HEIGHT = 1920;
+const REDDIT_OUTPUT_FPS = 30;
+const REDDIT_CAPTION_LEAD_SECONDS = 0.16;
+const PARKOUR_VIDEO_URL = "/assets/videos/parkour.mp4";
+const PARKOUR_FALLBACK_DURATION_SECONDS = 1041.8;
+const REDDIT_VOICES = [
+  { id: "en-US-AndrewNeural", label: "Andrew", detail: "Energetic male" },
+  { id: "en-US-AvaNeural", label: "Ava", detail: "Bright female" },
+  { id: "en-US-BrianNeural", label: "Brian", detail: "Deep male" },
+  { id: "en-US-EmmaNeural", label: "Emma", detail: "Natural female" }
+];
 const ACCENT_COLORS: AccentColor[] = [
   { hex: "#39ff88", ffmpeg: "0x39ff88" },
   { hex: "#ff335f", ffmpeg: "0xff335f" },
@@ -358,9 +390,10 @@ function viralVideoTitle(value: string) {
   return `${firstEmoji} ${titleBase}${suffix} ${secondEmoji}`.slice(0, 100);
 }
 
-function downloadFileName(value: string) {
+function downloadFileName(value: string, mimeType = "video/mp4") {
   const slug = value.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
-  return `🔥-${slug || "ranking-short"}-😂.mp4`;
+  const extension = mimeType.includes("webm") ? "webm" : "mp4";
+  return `🔥-${slug || "ranking-short"}-😂.${extension}`;
 }
 
 function buildCopyDescription(idea: ViralIdea, selectedCandidates: ViralCandidate[]) {
@@ -492,6 +525,330 @@ function toArrayBuffer(bytes: Uint8Array) {
   const buffer = new ArrayBuffer(bytes.byteLength);
   new Uint8Array(buffer).set(bytes);
   return buffer;
+}
+
+function containsMp4Box(bytes: Uint8Array, boxName: string, searchLimit: number) {
+  const target = [...boxName].map((character) => character.charCodeAt(0));
+  const limit = Math.min(bytes.length - target.length, searchLimit);
+
+  for (let index = 0; index <= limit; index += 1) {
+    if (target.every((value, offset) => bytes[index + offset] === value)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function assertValidMp4Container(bytes: Uint8Array) {
+  const headerSearchLimit = 4 * 1024 * 1024;
+
+  if (
+    bytes.length < 100_000 ||
+    !containsMp4Box(bytes, "ftyp", 64) ||
+    !containsMp4Box(bytes, "moov", headerSearchLimit) ||
+    !containsMp4Box(bytes, "mdat", headerSearchLimit)
+  ) {
+    throw new Error("FFmpeg produced an incomplete MP4. The video was not uploaded.");
+  }
+}
+
+function assertValidRecordedContainer(bytes: Uint8Array, mimeType: string) {
+  if (mimeType.includes("webm")) {
+    const hasEbmlHeader =
+      bytes.length >= 100_000 &&
+      bytes[0] === 0x1a &&
+      bytes[1] === 0x45 &&
+      bytes[2] === 0xdf &&
+      bytes[3] === 0xa3;
+
+    if (!hasEbmlHeader) {
+      throw new Error("The browser produced an incomplete WebM video.");
+    }
+
+    return;
+  }
+
+  assertValidMp4Container(bytes);
+}
+
+async function playableVideoUrl(blob: Blob) {
+  const url = URL.createObjectURL(blob);
+  const video = document.createElement("video");
+  video.preload = "metadata";
+  video.muted = true;
+  video.src = url;
+
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const timeout = window.setTimeout(
+        () => reject(new Error("The generated MP4 could not be decoded by the browser.")),
+        15000
+      );
+
+      video.onloadedmetadata = () => {
+        window.clearTimeout(timeout);
+        resolve();
+      };
+      video.onerror = () => {
+        window.clearTimeout(timeout);
+        reject(new Error("The generated MP4 has no supported video track."));
+      };
+    });
+
+    if (!video.videoWidth || !video.videoHeight || !Number.isFinite(video.duration)) {
+      throw new Error("The generated MP4 has invalid video metadata.");
+    }
+
+    return url;
+  } catch (error) {
+    URL.revokeObjectURL(url);
+    throw error;
+  } finally {
+    video.removeAttribute("src");
+    video.load();
+  }
+}
+
+function redditRecorderMimeType() {
+  const candidates = [
+    "video/mp4;codecs=avc1.42E01E,mp4a.40.2",
+    "video/mp4",
+    "video/webm;codecs=vp9,opus",
+    "video/webm;codecs=vp8,opus",
+    "video/webm"
+  ];
+
+  return candidates.find((mimeType) => MediaRecorder.isTypeSupported(mimeType)) || "";
+}
+
+async function imageBitmapFromPng(bytes: Uint8Array) {
+  return createImageBitmap(new Blob([toArrayBuffer(bytes)], { type: "image/png" }));
+}
+
+async function renderRedditStoryNatively({
+  backgroundStart,
+  audioContext,
+  narrationBytes,
+  headerBytes,
+  accentColor,
+  captions,
+  onProgress
+}: {
+  backgroundStart: number;
+  audioContext: AudioContext;
+  narrationBytes: Uint8Array;
+  headerBytes: Uint8Array;
+  accentColor: AccentColor;
+  captions: RedditCaption[];
+  onProgress?: (elapsed: number, duration: number) => void;
+}) {
+  const mimeType = redditRecorderMimeType();
+
+  if (!mimeType) {
+    throw new Error("This browser cannot record MP4 or WebM video. Use a current Chrome or Firefox release.");
+  }
+
+  const canvas = document.createElement("canvas");
+  canvas.width = REDDIT_OUTPUT_WIDTH;
+  canvas.height = REDDIT_OUTPUT_HEIGHT;
+  const ctx = canvas.getContext("2d", { alpha: false });
+
+  if (!ctx) {
+    throw new Error("Canvas video rendering is unavailable.");
+  }
+
+  const background = document.createElement("video");
+  background.preload = "auto";
+  background.muted = true;
+  background.loop = true;
+  background.playsInline = true;
+  const headerBitmap = await imageBitmapFromPng(headerBytes);
+  let drawTimer = 0;
+  let recorder: MediaRecorder | null = null;
+
+  try {
+    const backgroundReady = new Promise<void>((resolve, reject) => {
+        background.onloadedmetadata = () => resolve();
+        background.onerror = () => reject(new Error("The bundled parkour video could not be decoded."));
+      });
+    background.src = PARKOUR_VIDEO_URL;
+    await Promise.all([
+      backgroundReady,
+      audioContext.state === "running" ? Promise.resolve() : audioContext.resume()
+    ]);
+
+    await new Promise<void>((resolve) => {
+      background.onseeked = () => resolve();
+      background.currentTime = Math.min(backgroundStart, Math.max(0, background.duration - 0.25));
+    });
+
+    const narration = await audioContext.decodeAudioData(toArrayBuffer(narrationBytes));
+    const audioSource = audioContext.createBufferSource();
+    const audioDestination = audioContext.createMediaStreamDestination();
+    audioSource.buffer = narration;
+    audioSource.connect(audioDestination);
+    const canvasStream = canvas.captureStream(REDDIT_OUTPUT_FPS);
+    const outputStream = new MediaStream([
+      ...canvasStream.getVideoTracks(),
+      ...audioDestination.stream.getAudioTracks()
+    ]);
+    const chunks: Blob[] = [];
+    recorder = new MediaRecorder(outputStream, {
+      mimeType,
+      videoBitsPerSecond: 8_000_000,
+      audioBitsPerSecond: 128_000
+    });
+    const stopped = new Promise<void>((resolve, reject) => {
+      recorder!.ondataavailable = (event) => {
+        if (event.data.size) {
+          chunks.push(event.data);
+        }
+      };
+      recorder!.onstop = () => resolve();
+      recorder!.onerror = () => reject(new Error("The browser video recorder stopped unexpectedly."));
+    });
+    const recordingStart = audioContext.currentTime + 0.1;
+
+    const drawFrame = () => {
+      const sourceWidth = background.videoWidth;
+      const sourceHeight = background.videoHeight;
+      const targetRatio = REDDIT_OUTPUT_WIDTH / REDDIT_OUTPUT_HEIGHT;
+      const sourceRatio = sourceWidth / sourceHeight;
+      let sx = 0;
+      let sy = 0;
+      let sw = sourceWidth;
+      let sh = sourceHeight;
+
+      if (sourceRatio > targetRatio) {
+        sw = sourceHeight * targetRatio;
+        sx = (sourceWidth - sw) / 2;
+      } else {
+        sh = sourceWidth / targetRatio;
+        sy = (sourceHeight - sh) / 2;
+      }
+
+      ctx.drawImage(
+        background,
+        sx,
+        sy,
+        sw,
+        sh,
+        0,
+        0,
+        REDDIT_OUTPUT_WIDTH,
+        REDDIT_OUTPUT_HEIGHT
+      );
+      ctx.drawImage(headerBitmap, 0, 0);
+      const elapsed = Math.max(0, audioContext.currentTime - recordingStart);
+      const captionTime = elapsed + REDDIT_CAPTION_LEAD_SECONDS;
+      const activeCaptionIndex = captions.findIndex(
+        (caption) => captionTime >= caption.start && captionTime <= caption.end + 0.08
+      );
+
+      if (activeCaptionIndex >= 0) {
+        drawRedditCaption(ctx, captions[activeCaptionIndex], activeCaptionIndex, accentColor);
+      }
+
+      onProgress?.(elapsed, narration.duration);
+    };
+
+    drawFrame();
+    await background.play();
+    recorder.start(1000);
+    drawTimer = window.setInterval(drawFrame, 1000 / REDDIT_OUTPUT_FPS);
+    audioSource.onended = () => recorder?.stop();
+    audioSource.start(recordingStart);
+    await stopped;
+    outputStream.getTracks().forEach((track) => track.stop());
+
+    if (!chunks.length) {
+      throw new Error("The browser recorder returned an empty video.");
+    }
+
+    return new Blob(chunks, { type: recorder.mimeType || mimeType });
+  } finally {
+    if (drawTimer) {
+      window.clearInterval(drawTimer);
+    }
+
+    background.pause();
+    background.removeAttribute("src");
+    background.load();
+    headerBitmap.close();
+  }
+}
+
+function base64ToUint8Array(value: string) {
+  const binary = window.atob(value);
+  const bytes = new Uint8Array(binary.length);
+
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+
+  return bytes;
+}
+
+async function ffmpegAssetBlobUrl(url: string, mimeType: string, minimumBytes: number) {
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), 60000);
+
+  try {
+    const response = await fetch(url, {
+      cache: "force-cache",
+      signal: controller.signal
+    });
+
+    if (!response.ok) {
+      throw new Error(`FFmpeg asset ${url} returned ${response.status}.`);
+    }
+
+    const bytes = await response.arrayBuffer();
+
+    if (bytes.byteLength < minimumBytes) {
+      throw new Error(`FFmpeg asset ${url} is missing or incomplete.`);
+    }
+
+    return URL.createObjectURL(new Blob([bytes], { type: mimeType }));
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") {
+      throw new Error(`Downloading ${url} timed out. Check the deployment assets and connection.`);
+    }
+
+    throw error;
+  } finally {
+    window.clearTimeout(timeout);
+  }
+}
+
+function narrationCharacterCount(title: string, story: string) {
+  return `${title.trim()}. ${story.trim()}`.length;
+}
+
+function redditUploadDescription(title: string, story: string, source: string) {
+  const cleanStory = story.replace(/\s+/g, " ").trim();
+  const firstSentenceEnd = cleanStory.search(/[.!?](?:\s|$)/);
+  const rawHook = firstSentenceEnd >= 0 ? cleanStory.slice(0, firstSentenceEnd + 1) : cleanStory;
+  const hook = rawHook.length > 170
+    ? `${rawHook.slice(0, 167).replace(/\s+\S*$/, "")}...`
+    : rawHook;
+  const normalizedSource = source.toLowerCase();
+  const relatedHashtags = normalizedSource.includes("nosleep")
+    ? "#NoSleep #ScaryStories #HorrorStories"
+    : normalizedSource.includes("confession")
+      ? "#Confession #RedditConfessions #TrueStories"
+      : "#RedditStories #Storytime #ViralStories";
+
+  return [
+    `📖 ${title} 😳🔥`,
+    hook ? `👀 ${hook}` : "👀 This story gets crazier the longer it goes...",
+    `This ${source || "Reddit"} story had me watching until the very end. 🤯`,
+    "What would YOU have done? Drop your answer in the comments. 👇💬",
+    "👍 Like for more stories and subscribe so you do not miss the next one! 🔔⛏️",
+    "",
+    `${relatedHashtags} #MinecraftParkour #Minecraft #Shorts #YouTubeShorts #FYP`
+  ].join("\n");
 }
 
 function wrapText(
@@ -713,6 +1070,85 @@ async function canvasToPngBytes(canvas: HTMLCanvasElement) {
   });
 
   return new Uint8Array(await blob.arrayBuffer());
+}
+
+async function createRedditHeaderPng(title: string, accentColor: AccentColor) {
+  const canvas = document.createElement("canvas");
+  canvas.width = REDDIT_OUTPUT_WIDTH;
+  canvas.height = REDDIT_OUTPUT_HEIGHT;
+  const ctx = canvas.getContext("2d");
+
+  if (!ctx) {
+    throw new Error("Canvas rendering is unavailable in this browser.");
+  }
+
+  ctx.clearRect(0, 0, REDDIT_OUTPUT_WIDTH, REDDIT_OUTPUT_HEIGHT);
+  ctx.scale(REDDIT_OUTPUT_WIDTH / OUTPUT_WIDTH, REDDIT_OUTPUT_HEIGHT / OUTPUT_HEIGHT);
+  ctx.textAlign = "center";
+  ctx.textBaseline = "top";
+  ctx.lineJoin = "round";
+  ctx.shadowColor = "rgba(0, 0, 0, 0.82)";
+  ctx.shadowBlur = 24;
+  ctx.strokeStyle = "rgba(0, 0, 0, 0.9)";
+
+  ctx.fillStyle = accentColor.hex;
+  ctx.beginPath();
+  ctx.roundRect(350, 132, 380, 62, 18);
+  ctx.fill();
+  ctx.shadowBlur = 0;
+  ctx.fillStyle = "#080b12";
+  ctx.font = '900 31px "Arial Black", Impact, sans-serif';
+  ctx.fillText("REDDIT STORY", OUTPUT_WIDTH / 2, 147);
+
+  ctx.shadowBlur = 24;
+  ctx.fillStyle = "#ffffff";
+  let titleFontSize = 54;
+  let lines: string[] = [];
+
+  do {
+    ctx.font = `900 ${titleFontSize}px "Arial Black", Impact, sans-serif`;
+    lines = wrapTextFully(ctx, title, 900);
+    titleFontSize -= 2;
+  } while (lines.length > 5 && titleFontSize >= 34);
+
+  const titleLineHeight = Math.max(44, (titleFontSize + 2) * 1.2);
+  lines.forEach((line, index) => {
+    const y = 225 + index * titleLineHeight;
+    ctx.lineWidth = 10;
+    ctx.strokeText(line, OUTPUT_WIDTH / 2, y);
+    ctx.fillText(line, OUTPUT_WIDTH / 2, y);
+  });
+
+  return canvasToPngBytes(canvas);
+}
+
+function drawRedditCaption(
+  ctx: CanvasRenderingContext2D,
+  caption: RedditCaption,
+  index: number,
+  accentColor: AccentColor
+) {
+  ctx.save();
+  ctx.scale(REDDIT_OUTPUT_WIDTH / OUTPUT_WIDTH, REDDIT_OUTPUT_HEIGHT / OUTPUT_HEIGHT);
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.lineJoin = "round";
+  ctx.shadowColor = "rgba(0, 0, 0, 0.9)";
+  ctx.shadowBlur = 28;
+  ctx.strokeStyle = "rgba(0, 0, 0, 0.96)";
+  ctx.lineWidth = 18;
+  ctx.font = '900 94px "Arial Black", Impact, sans-serif';
+  const lines = wrapTextFully(ctx, caption.text.toUpperCase(), 900);
+  const lineHeight = 108;
+  const startY = 1010 - ((lines.length - 1) * lineHeight) / 2;
+
+  lines.forEach((line, lineIndex) => {
+    const y = startY + lineIndex * lineHeight;
+    ctx.fillStyle = (index + lineIndex) % 3 === 1 ? accentColor.hex : "#ffffff";
+    ctx.strokeText(line, OUTPUT_WIDTH / 2, y);
+    ctx.fillText(line, OUTPUT_WIDTH / 2, y);
+  });
+  ctx.restore();
 }
 
 async function videoDurationFromFile(file: File) {
@@ -2024,9 +2460,31 @@ async function renderEndCard({
   ]);
 }
 
+async function videoDurationFromUrl(url: string) {
+  try {
+    const video = document.createElement("video");
+    video.preload = "metadata";
+    video.src = url;
+
+    await new Promise<void>((resolve, reject) => {
+      video.onloadedmetadata = () => resolve();
+      video.onerror = () => reject(new Error("Could not read bundled parkour metadata."));
+    });
+
+    video.removeAttribute("src");
+    video.load();
+    return Number.isFinite(video.duration) && video.duration > 0
+      ? video.duration
+      : PARKOUR_FALLBACK_DURATION_SECONDS;
+  } catch {
+    return PARKOUR_FALLBACK_DURATION_SECONDS;
+  }
+}
+
 export default function Home() {
   // Form state is kept in one place so validation, preview labels, and FFmpeg
   // processing all use the same five ranked entries.
+  const [appMode, setAppMode] = useState<AppMode>("ranking");
   const [title, setTitle] = useState("Top 5 Funniest TikToks This Week");
   const [duration, setDuration] = useState(DEFAULT_DURATION_SECONDS);
   const [smartHighlights, setSmartHighlights] = useState(true);
@@ -2063,8 +2521,17 @@ export default function Home() {
   const [ideaSearchOpen, setIdeaSearchOpen] = useState(false);
   const [ideaCreatorIds, setIdeaCreatorIds] = useState<string[]>(DEFAULT_IDEA_SEARCH_SETTINGS.creatorIds);
   const [ideaTitleIds, setIdeaTitleIds] = useState<string[]>(DEFAULT_IDEA_SEARCH_SETTINGS.titleIds);
+  const [redditUrl, setRedditUrl] = useState("");
+  const [redditTitle, setRedditTitle] = useState("The Most Awkward Thing That Happened at Work");
+  const [redditStory, setRedditStory] = useState("");
+  const [redditSource, setRedditSource] = useState("");
+  const [redditVoice, setRedditVoice] = useState("en-US-AndrewNeural");
+  const [redditRate, setRedditRate] = useState(12);
+  const [isFindingRedditIdea, setIsFindingRedditIdea] = useState(false);
+  const [isImportingReddit, setIsImportingReddit] = useState(false);
 
   const ffmpegRef = useRef<FFmpeg | null>(null);
+  const ffmpegLoadPromiseRef = useRef<Promise<FFmpeg> | null>(null);
   const autoRunEnabledRef = useRef(false);
   const dailyScheduleEnabledRef = useRef(false);
   const autoRunBusyRef = useRef(false);
@@ -2090,6 +2557,17 @@ export default function Home() {
         : "",
     [selectedViralCandidates, viralIdea]
   );
+  const redditCopyPasteDescription = useMemo(
+    () => redditUploadDescription(redditTitle.trim(), redditStory, redditSource),
+    [redditSource, redditStory, redditTitle]
+  );
+  const activeCopyPasteDescription = appMode === "reddit"
+    ? redditCopyPasteDescription
+    : copyPasteDescription;
+  const redditDescriptionTags = useMemo(
+    () => uploadTagsFromDescription(redditCopyPasteDescription),
+    [redditCopyPasteDescription]
+  );
   const uploadDescription = copyPasteDescription || fallbackViralUploadDescription(title, entries);
   const uploadTags = useMemo(() => uploadTagsFromDescription(uploadDescription), [uploadDescription]);
   const parsedDailySchedule = useMemo(
@@ -2110,6 +2588,10 @@ export default function Home() {
       ? "Select at least one title style."
       : "";
   const ideaSearchSummary = `${ideaCreatorIds.length} creators - ${ideaTitleIds.length} titles`;
+  const redditCharacterCount = useMemo(
+    () => narrationCharacterCount(redditTitle, redditStory),
+    [redditStory, redditTitle]
+  );
 
   useEffect(() => {
     let isMounted = true;
@@ -2608,15 +3090,15 @@ export default function Home() {
   }
 
   async function copyDescription() {
-    if (!copyPasteDescription) {
+    if (!activeCopyPasteDescription) {
       return;
     }
 
     try {
-      await navigator.clipboard.writeText(copyPasteDescription);
+      await navigator.clipboard.writeText(activeCopyPasteDescription);
     } catch {
       const textarea = document.createElement("textarea");
-      textarea.value = copyPasteDescription;
+      textarea.value = activeCopyPasteDescription;
       textarea.style.position = "fixed";
       textarea.style.opacity = "0";
       document.body.appendChild(textarea);
@@ -2629,6 +3111,93 @@ export default function Home() {
     window.setTimeout(() => setCopiedDescription(false), 1800);
   }
 
+  async function findRedditStoryIdea() {
+    if (isFindingRedditIdea) {
+      return;
+    }
+
+    setIsFindingRedditIdea(true);
+    setStatusText("Finding a Reddit story...");
+    setErrors((current) => {
+      const { reddit, ...rest } = current;
+      return rest;
+    });
+
+    try {
+      const response = await fetch("/api/reddit/story", { cache: "no-store" });
+      const rawPayload = await response.text();
+      const payload = rawPayload
+        ? (JSON.parse(rawPayload) as {
+            title?: string;
+            story?: string;
+            subreddit?: string;
+            sourceUrl?: string;
+            error?: string;
+          })
+        : null;
+
+      if (!response.ok || !payload?.title || !payload.story) {
+        throw new Error(payload?.error || "Could not find a Reddit story.");
+      }
+
+      setRedditTitle(payload.title);
+      setRedditStory(payload.story);
+      setRedditSource(payload.subreddit || "Reddit");
+      setRedditUrl(payload.sourceUrl || "");
+      setStatusText(`Story found from ${payload.subreddit || "Reddit"}`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Could not find a Reddit story.";
+      setErrors((current) => ({ ...current, reddit: message }));
+      setStatusText("Reddit idea search failed");
+    } finally {
+      setIsFindingRedditIdea(false);
+    }
+  }
+
+  async function importRedditStory() {
+    if (isImportingReddit || !redditUrl.trim()) {
+      return;
+    }
+
+    setIsImportingReddit(true);
+    setStatusText("Importing Reddit story...");
+    setErrors((current) => {
+      const { reddit, ...rest } = current;
+      return rest;
+    });
+
+    try {
+      const response = await fetch("/api/reddit/story", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url: redditUrl.trim() })
+      });
+      const payload = (await response.json()) as {
+        title?: string;
+        story?: string;
+        subreddit?: string;
+        sourceUrl?: string;
+        error?: string;
+      };
+
+      if (!response.ok || !payload.title || !payload.story) {
+        throw new Error(payload.error || "Could not import that Reddit post.");
+      }
+
+      setRedditTitle(payload.title);
+      setRedditStory(payload.story);
+      setRedditSource(payload.subreddit || "Reddit");
+      setRedditUrl(payload.sourceUrl || redditUrl);
+      setStatusText("Reddit story imported");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Could not import the Reddit story.";
+      setErrors((current) => ({ ...current, reddit: message }));
+      setStatusText("Reddit import failed");
+    } finally {
+      setIsImportingReddit(false);
+    }
+  }
+
   async function uploadGeneratedVideo(
     blob: Blob,
     uploadTitle = title,
@@ -2636,9 +3205,9 @@ export default function Home() {
     tags = uploadTags
   ) {
     const formData = new FormData();
-    const fileName = downloadFileName(uploadTitle);
+    const fileName = downloadFileName(uploadTitle, blob.type);
 
-    formData.set("video", new File([blob], fileName, { type: "video/mp4" }));
+    formData.set("video", new File([blob], fileName, { type: blob.type || "video/mp4" }));
     formData.set("title", viralVideoTitle(uploadTitle));
     formData.set("description", description);
     formData.set("tags", tags.join(","));
@@ -2700,24 +3269,216 @@ export default function Home() {
       return ffmpegRef.current;
     }
 
-    const ffmpeg = new FFmpeg();
+    if (ffmpegLoadPromiseRef.current) {
+      return ffmpegLoadPromiseRef.current;
+    }
 
-    ffmpeg.on("log", ({ message }) => {
-      if (message.toLowerCase().includes("error")) {
-        console.warn(message);
+    const loadPromise = (async () => {
+      const ffmpeg = new FFmpeg();
+      let coreBlobUrl = "";
+      let wasmBlobUrl = "";
+
+      ffmpeg.on("log", ({ message }) => {
+        if (message.toLowerCase().includes("error")) {
+          console.warn(message);
+        }
+      });
+
+      try {
+        setStatusText("Downloading FFmpeg engine (32 MB)...");
+        [coreBlobUrl, wasmBlobUrl] = await Promise.all([
+          ffmpegAssetBlobUrl("/ffmpeg/ffmpeg-core.js", "text/javascript", 10_000),
+          ffmpegAssetBlobUrl("/ffmpeg/ffmpeg-core.wasm", "application/wasm", 1_000_000)
+        ]);
+        setStatusText("Starting FFmpeg...");
+
+        let startupTimeout = 0;
+        const startupGuard = new Promise<never>((_, reject) => {
+          startupTimeout = window.setTimeout(
+            () => reject(new Error("FFmpeg startup timed out. Refresh the page and try again.")),
+            45000
+          );
+        });
+
+        try {
+          await Promise.race([
+            ffmpeg.load({
+              coreURL: coreBlobUrl,
+              wasmURL: wasmBlobUrl
+            }),
+            startupGuard
+          ]);
+        } finally {
+          window.clearTimeout(startupTimeout);
+        }
+
+        ffmpegRef.current = ffmpeg;
+        setFfmpegLoaded(true);
+        return ffmpeg;
+      } catch (error) {
+        ffmpeg.terminate();
+        ffmpegRef.current = null;
+        setFfmpegLoaded(false);
+        throw error;
+      } finally {
+        if (coreBlobUrl) {
+          URL.revokeObjectURL(coreBlobUrl);
+        }
+
+        if (wasmBlobUrl) {
+          URL.revokeObjectURL(wasmBlobUrl);
+        }
       }
-    });
+    })();
 
-    setStatusText("Loading FFmpeg...");
+    ffmpegLoadPromiseRef.current = loadPromise;
 
-    await ffmpeg.load({
-      coreURL: "/ffmpeg/ffmpeg-core.js",
-      wasmURL: "/ffmpeg/ffmpeg-core.wasm"
-    });
+    try {
+      return await loadPromise;
+    } finally {
+      ffmpegLoadPromiseRef.current = null;
+    }
+  }
 
-    ffmpegRef.current = ffmpeg;
-    setFfmpegLoaded(true);
-    return ffmpeg;
+  async function generateRedditStoryVideo() {
+    if (isGenerating) {
+      return false;
+    }
+
+    const nextErrors: FieldErrors = {};
+    if (!redditTitle.trim()) {
+      nextErrors.redditTitle = "Enter a story title.";
+    }
+
+    if (!redditStory.trim()) {
+      nextErrors.redditStory = "Paste or import a Reddit story.";
+    }
+
+    if (redditCharacterCount > REDDIT_MAX_NARRATION_CHARACTERS) {
+      nextErrors.redditStory = `Keep the title and story under ${REDDIT_MAX_NARRATION_CHARACTERS.toLocaleString()} characters.`;
+    }
+
+    if (Object.keys(nextErrors).length) {
+      setErrors(nextErrors);
+      setStatusText("Fix the highlighted fields.");
+      return false;
+    }
+
+    if (previewUrl) {
+      URL.revokeObjectURL(previewUrl);
+      setPreviewUrl(null);
+    }
+
+    setOutputBlob(null);
+    setYoutubeUploadUrl(null);
+    setErrors({});
+    setIsGenerating(true);
+    setProgress(3);
+    const AudioContextConstructor =
+      window.AudioContext ||
+      (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+    const storyAudioContext = AudioContextConstructor ? new AudioContextConstructor() : null;
+    const storyAudioResume = storyAudioContext?.resume();
+
+    try {
+      if (!storyAudioContext || !storyAudioResume) {
+        throw new Error("This browser does not support audio recording.");
+      }
+
+      await storyAudioResume;
+      setStatusText("Generating narration...");
+      const narrationText = `${redditTitle.trim()}. ${redditStory.trim()}`;
+      const response = await fetch("/api/tts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          text: narrationText,
+          voice: redditVoice,
+          rate: redditRate
+        })
+      });
+      const rawPayload = await response.text();
+      const payload = rawPayload
+        ? (JSON.parse(rawPayload) as RedditTtsResponse & { error?: string })
+        : null;
+
+      if (!response.ok || !payload?.audioBase64 || !payload.captions?.length) {
+        throw new Error(payload?.error || "The text-to-speech service returned no narration.");
+      }
+
+      setProgress(20);
+      setStatusText("Preparing parkour and captions...");
+      const accentColor = randomAccentColor();
+      const parkourDuration = await videoDurationFromUrl(PARKOUR_VIDEO_URL);
+      const backgroundStart = Math.random() * Math.max(0, parkourDuration - 2);
+      const narrationBytes = base64ToUint8Array(payload.audioBase64);
+      const headerBytes = await createRedditHeaderPng(redditTitle.trim(), accentColor);
+
+      setStatusText("Recording story video in real time...");
+      setProgress(50);
+      let lastReportedSecond = -1;
+      const blob = await renderRedditStoryNatively({
+        backgroundStart,
+        audioContext: storyAudioContext,
+        narrationBytes,
+        headerBytes,
+        accentColor,
+        captions: payload.captions,
+        onProgress: (elapsed, total) => {
+          const elapsedSecond = Math.floor(Math.min(elapsed, total));
+
+          if (elapsedSecond !== lastReportedSecond) {
+            lastReportedSecond = elapsedSecond;
+            setStatusText(`Recording story video: ${elapsedSecond}s / ${Math.ceil(total)}s`);
+            setProgress(50 + Math.round((Math.min(elapsed, total) / total) * 44));
+          }
+        }
+      });
+
+      setStatusText("Validating video preview...");
+      setProgress(94);
+      const output = new Uint8Array(await blob.arrayBuffer());
+      assertValidRecordedContainer(output, blob.type);
+      const url = await playableVideoUrl(blob);
+      setOutputBlob(blob);
+      setPreviewUrl(url);
+      setProgress(100);
+
+      if (autoUploadToYoutube) {
+        try {
+          setIsUploadingYoutube(true);
+          setStatusText("Uploading story to YouTube...");
+          const description = redditCopyPasteDescription;
+          const uploadUrl = await uploadGeneratedVideo(
+            blob,
+            redditTitle.trim(),
+            description,
+            uploadTagsFromDescription(description)
+          );
+          setYoutubeUploadUrl(uploadUrl);
+          setStatusText("Story uploaded to YouTube");
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "YouTube upload failed.";
+          setErrors((current) => ({ ...current, youtube: message }));
+          setStatusText("Story preview ready; upload failed");
+          return false;
+        } finally {
+          setIsUploadingYoutube(false);
+        }
+      } else {
+        setStatusText("Story preview ready");
+      }
+
+      return true;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Reddit story generation failed.";
+      setErrors((current) => ({ ...current, reddit: message }));
+      setStatusText("Story generation failed");
+      return false;
+    } finally {
+      await storyAudioContext?.close().catch(() => undefined);
+      setIsGenerating(false);
+    }
   }
 
   async function generateVideo(options: GenerateVideoOptions = {}) {
@@ -2975,7 +3736,10 @@ export default function Home() {
     const url = URL.createObjectURL(outputBlob);
     const anchor = document.createElement("a");
     anchor.href = url;
-    anchor.download = downloadFileName(title);
+    anchor.download = downloadFileName(
+      appMode === "reddit" ? redditTitle : title,
+      outputBlob.type
+    );
     document.body.appendChild(anchor);
     anchor.click();
     anchor.remove();
@@ -2986,15 +3750,19 @@ export default function Home() {
 
   return (
     <main className="shell">
-      <section className="workspace" aria-label="Shorts ranking generator">
+      <section className="workspace" aria-label="Shorts video generator">
         <div className="editor-panel">
           <div className="panel-heading">
             <div>
-              <p className="eyebrow">Ranking Short</p>
-              <h1>YouTube Shorts ranking video generator</h1>
+              <p className="eyebrow">{appMode === "ranking" ? "Ranking Short" : "Story Short"}</p>
+              <h1>
+                {appMode === "ranking"
+                  ? "YouTube Shorts ranking video generator"
+                  : "Reddit story video generator"}
+              </h1>
             </div>
             <div className="header-tools">
-              <label className="upload-toggle" data-active={dailyScheduleEnabled}>
+              {appMode === "ranking" ? <label className="upload-toggle" data-active={dailyScheduleEnabled}>
                 <input
                   type="checkbox"
                   checked={dailyScheduleEnabled}
@@ -3013,8 +3781,8 @@ export default function Home() {
                       : "daily slots"}
                   </small>
                 </span>
-              </label>
-              <label className="upload-toggle" data-active={autoRunEvery15}>
+              </label> : null}
+              {appMode === "ranking" ? <label className="upload-toggle" data-active={autoRunEvery15}>
                 <input
                   type="checkbox"
                   checked={autoRunEvery15}
@@ -3031,7 +3799,7 @@ export default function Home() {
                       : "15 min cycle"}
                   </small>
                 </span>
-              </label>
+              </label> : null}
               <label className="upload-toggle" data-active={autoUploadToYoutube}>
                 <input
                   type="checkbox"
@@ -3060,7 +3828,36 @@ export default function Home() {
             </div>
           </div>
 
-          <section className="idea-panel" aria-label="Viral idea finder">
+          <div className="creation-mode-switch" role="tablist" aria-label="Video type">
+            <button
+              type="button"
+              role="tab"
+              aria-selected={appMode === "ranking"}
+              data-active={appMode === "ranking"}
+              onClick={() => {
+                setAppMode("ranking");
+                setErrors({});
+              }}
+            >
+              <ListOrdered size={18} />
+              Ranking
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={appMode === "reddit"}
+              data-active={appMode === "reddit"}
+              onClick={() => {
+                setAppMode("reddit");
+                setErrors({});
+              }}
+            >
+              <BookOpen size={18} />
+              Reddit Story
+            </button>
+          </div>
+
+          {appMode === "ranking" ? <section className="idea-panel" aria-label="Viral idea finder">
             <div className="idea-top">
               <div>
                 <p className="eyebrow">Automation</p>
@@ -3312,8 +4109,9 @@ export default function Home() {
                 </div>
               </div>
             ) : null}
-          </section>
+          </section> : null}
 
+          {appMode === "ranking" ? <>
           <div className="form-grid">
             <label className="field field-wide">
               <span>Main title</span>
@@ -3401,6 +4199,130 @@ export default function Home() {
               </article>
             ))}
           </div>
+          </> : (
+            <section className="reddit-editor" aria-label="Reddit story editor">
+              <div className="reddit-editor-head">
+                <div>
+                  <p className="eyebrow">Story Source</p>
+                  <h2>Reddit narration over Minecraft parkour</h2>
+                </div>
+                <div className="reddit-source-actions">
+                  {redditSource ? <span className="source-chip">{redditSource}</span> : null}
+                  <button
+                    type="button"
+                    className="secondary-button"
+                    onClick={findRedditStoryIdea}
+                    disabled={isFindingRedditIdea || isImportingReddit}
+                  >
+                    {isFindingRedditIdea ? <Loader2 size={18} className="spin" /> : <Lightbulb size={18} />}
+                    Generate Story Idea
+                  </button>
+                </div>
+              </div>
+
+              <div className="reddit-import-row">
+                <label className="field">
+                  <span>Reddit post URL</span>
+                  <input
+                    value={redditUrl}
+                    onChange={(event) => setRedditUrl(event.target.value)}
+                    placeholder="https://www.reddit.com/r/.../comments/..."
+                  />
+                </label>
+                <button
+                  type="button"
+                  className="secondary-button reddit-import-button"
+                  onClick={importRedditStory}
+                  disabled={isImportingReddit || !redditUrl.trim()}
+                >
+                  {isImportingReddit ? <Loader2 size={18} className="spin" /> : <BookOpen size={18} />}
+                  Import Post
+                </button>
+              </div>
+
+              <div className="reddit-form-grid">
+                <label className="field reddit-title-field">
+                  <span>Story title</span>
+                  <input
+                    value={redditTitle}
+                    onChange={(event) => setRedditTitle(event.target.value)}
+                    maxLength={120}
+                    placeholder="The title viewers see at the top"
+                  />
+                  {errors.redditTitle ? <small className="error-text">{errors.redditTitle}</small> : null}
+                </label>
+
+                <label className="field">
+                  <span><Mic2 size={15} /> Voice</span>
+                  <select value={redditVoice} onChange={(event) => setRedditVoice(event.target.value)}>
+                    {REDDIT_VOICES.map((voice) => (
+                      <option value={voice.id} key={voice.id}>
+                        {voice.label} - {voice.detail}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
+                <label className="field reddit-story-field">
+                  <span>Story text</span>
+                  <textarea
+                    value={redditStory}
+                    onChange={(event) => setRedditStory(event.target.value)}
+                    maxLength={REDDIT_MAX_NARRATION_CHARACTERS}
+                    placeholder="Import a Reddit post or paste the story here..."
+                  />
+                  <small data-over-limit={redditCharacterCount > REDDIT_MAX_NARRATION_CHARACTERS}>
+                    {redditCharacterCount.toLocaleString()}/{REDDIT_MAX_NARRATION_CHARACTERS.toLocaleString()} narration characters
+                  </small>
+                  {errors.redditStory ? <small className="error-text">{errors.redditStory}</small> : null}
+                </label>
+
+                <div className="reddit-settings-column">
+                  <label className="field">
+                    <span>Voice pace: +{redditRate}%</span>
+                    <input
+                      type="range"
+                      min={0}
+                      max={30}
+                      step={2}
+                      value={redditRate}
+                      onChange={(event) => setRedditRate(Number(event.target.value))}
+                    />
+                  </label>
+
+                  <div className="parkour-source">
+                    <Gamepad2 size={20} />
+                    <div>
+                      <strong>parkour.mp4</strong>
+                      <span>Random start, loops automatically</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="description-panel">
+                <div className="description-head">
+                  <div>
+                    <strong>Copy-paste YouTube description</strong>
+                    <span>{redditDescriptionTags.length} story-related hashtags</span>
+                  </div>
+                  <button
+                    type="button"
+                    className="secondary-button compact-button"
+                    onClick={copyDescription}
+                  >
+                    {copiedDescription ? <Check size={17} /> : <Copy size={17} />}
+                    {copiedDescription ? "Copied" : "Copy"}
+                  </button>
+                </div>
+                <textarea
+                  className="description-area"
+                  readOnly
+                  value={redditCopyPasteDescription}
+                />
+              </div>
+            </section>
+          )}
 
           {hasErrors ? (
             <div className="error-panel" role="alert">
@@ -3409,6 +4331,8 @@ export default function Home() {
                 {errors.dailySchedule ??
                   errors.githubSchedule ??
                   errors.autoRun ??
+                  errors.reddit ??
+                  errors.redditStory ??
                   errors.generation ??
                   errors.youtube ??
                   errors.idea ??
@@ -3427,13 +4351,17 @@ export default function Home() {
           ) : null}
 
           <div className="actions">
-            <button className="primary-button" onClick={() => generateVideo()} disabled={isGenerating}>
+            <button
+              className="primary-button"
+              onClick={() => appMode === "ranking" ? generateVideo() : generateRedditStoryVideo()}
+              disabled={isGenerating}
+            >
               {isGenerating ? <Loader2 size={19} className="spin" /> : <Wand2 size={19} />}
-              Generate Video
+              {appMode === "ranking" ? "Generate Ranking" : "Generate Story Video"}
             </button>
             <button className="secondary-button" onClick={downloadVideo} disabled={!outputBlob}>
               <Download size={19} />
-              Download MP4
+              Download Video
             </button>
           </div>
 
@@ -3446,7 +4374,7 @@ export default function Home() {
           <div className="phone-frame">
             {previewUrl ? (
               <video src={previewUrl} controls playsInline />
-            ) : (
+            ) : appMode === "ranking" ? (
               <div className="preview-empty">
                 <div className="preview-title">{title || "Your ranking title"}</div>
                 <div className="preview-rank">#5</div>
@@ -3459,11 +4387,28 @@ export default function Home() {
                   ))}
                 </ol>
               </div>
+            ) : (
+              <div className="preview-empty reddit-preview-empty">
+                <span className="reddit-preview-label">REDDIT STORY</span>
+                <div className="preview-title">{redditTitle || "Your Reddit story"}</div>
+                <div className="reddit-preview-caption">
+                  {redditStory.trim()
+                    ? redditStory.trim().split(/\s+/).slice(0, 5).join(" ").toUpperCase()
+                    : "AUTO CAPTIONS APPEAR HERE"}
+                </div>
+                <Gamepad2 size={38} />
+              </div>
             )}
           </div>
           <div className="preview-meta">
             <strong>1080x1920 MP4</strong>
-            <span>{ffmpegLoaded ? "FFmpeg ready" : "FFmpeg loads on generate"}</span>
+            <span>
+              {appMode === "reddit"
+                ? "TTS + timed captions"
+                : ffmpegLoaded
+                  ? "FFmpeg ready"
+                  : "FFmpeg loads on generate"}
+            </span>
           </div>
         </aside>
       </section>

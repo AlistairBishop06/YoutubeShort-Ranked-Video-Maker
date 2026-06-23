@@ -5,4 +5,5 @@ dist
 *.log
 .env*
 public/ffmpeg
+public/assets/videos
 .tmp

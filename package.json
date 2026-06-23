@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "next dev",
+    "prebuild": "node scripts/copy-ffmpeg-core.mjs",
     "build": "next build",
     "github:upload": "node scripts/github-scheduled-upload.mjs",
     "start": "next start",
@@ -14,9 +15,11 @@
     "@ffmpeg/core": "^0.12.10",
     "@ffmpeg/ffmpeg": "^0.12.15",
     "@ffmpeg/util": "^0.12.2",
+    "fast-xml-parser": "^5.9.3",
     "googleapis": "^173.0.0",
     "lucide-react": "^0.468.0",
     "next": "^15.0.0",
+    "node-edge-tts": "^1.2.10",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
   },

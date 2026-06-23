@@ -19,6 +19,14 @@ const SFX_SAMPLE_RATE = 44100;
 const TRANSITION_SFX_SECONDS = 0.64;
 const SMART_AUDIO_BUCKET_SECONDS = 0.1;
 const DEFAULT_WINDOW_MINUTES = 15;
+const STORY_CAPTION_LEAD_SECONDS = 0.16;
+const STORY_MAX_NARRATION_CHARACTERS = 6000;
+const STORY_VOICES = [
+  "en-US-AndrewNeural",
+  "en-US-AvaNeural",
+  "en-US-BrianNeural",
+  "en-US-EmmaNeural"
+];
 const ACCENT_COLORS = [
   { ffmpeg: "0x39ff88" },
   { ffmpeg: "0xff335f" },
@@ -446,21 +454,27 @@ async function run(command, args, options = {}) {
   }
 }
 
-async function findViralIdea() {
+function configuredAppBaseUrl() {
   const appBaseUrl = (process.env.APP_BASE_URL || process.env.NEXT_PUBLIC_APP_URL || "").replace(
     /\/$/,
     ""
   );
+
+  if (!appBaseUrl) {
+    throw new Error("APP_BASE_URL is required for scheduled generation.");
+  }
+
+  return appBaseUrl;
+}
+
+async function findViralIdea() {
+  const appBaseUrl = configuredAppBaseUrl();
   const excludeIds = String(process.env.RECENT_TIKTOK_IDS || "")
     .split(",")
     .map((id) => id.trim())
     .filter(Boolean);
   const creatorIds = parseIdInput(process.env.UPLOAD_IDEA_CREATOR_IDS);
   const titleIds = parseIdInput(process.env.UPLOAD_IDEA_TITLE_IDS);
-
-  if (!appBaseUrl) {
-    throw new Error("APP_BASE_URL is required so GitHub Actions can call /api/ideas/find.");
-  }
 
   const response = await fetch(`${appBaseUrl}/api/ideas/find`, {
     method: "POST",
@@ -480,6 +494,91 @@ async function findViralIdea() {
   }
 
   return payload;
+}
+
+function redditStoryId(sourceUrl) {
+  return String(sourceUrl || "").match(/\/comments\/([a-z0-9]+)\//i)?.[1] || "";
+}
+
+function trimStoryForNarration(title, story) {
+  const maximumStoryLength = Math.max(
+    500,
+    STORY_MAX_NARRATION_CHARACTERS - cleanText(title).length - 2
+  );
+  const cleanStory = cleanText(story);
+
+  if (cleanStory.length <= maximumStoryLength) {
+    return cleanStory;
+  }
+
+  const shortened = cleanStory.slice(0, maximumStoryLength);
+  const sentenceEnd = Math.max(
+    shortened.lastIndexOf("."),
+    shortened.lastIndexOf("!"),
+    shortened.lastIndexOf("?")
+  );
+
+  return sentenceEnd > shortened.length * 0.7
+    ? shortened.slice(0, sentenceEnd + 1)
+    : shortened.trimEnd();
+}
+
+async function findRedditStory() {
+  const appBaseUrl = configuredAppBaseUrl();
+  const excludeIds = String(process.env.RECENT_REDDIT_IDS || "")
+    .split(",")
+    .map((id) => id.trim())
+    .filter(Boolean);
+  const url = new URL(`${appBaseUrl}/api/reddit/story`);
+  url.searchParams.set("excludeIds", excludeIds.join(","));
+  const response = await fetch(url, {
+    cache: "no-store",
+    signal: AbortSignal.timeout(30000)
+  });
+  const payload = await response.json();
+
+  if (!response.ok || !payload.title || !payload.story) {
+    throw new Error(payload.error || "Could not find a Reddit story.");
+  }
+
+  return {
+    ...payload,
+    title: cleanText(payload.title),
+    story: trimStoryForNarration(payload.title, payload.story),
+    subreddit: cleanText(payload.subreddit, "Reddit")
+  };
+}
+
+async function generateStoryNarration(story, workDir) {
+  const appBaseUrl = configuredAppBaseUrl();
+  const voice = randomItem(STORY_VOICES);
+  const rate = randomItem([10, 12, 14, 16, 18]);
+  const response = await fetch(`${appBaseUrl}/api/tts`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      text: `${story.title}. ${story.story}`,
+      voice,
+      rate
+    }),
+    signal: AbortSignal.timeout(120000)
+  });
+  const payload = await response.json();
+
+  if (!response.ok || !payload.audioBase64 || !Array.isArray(payload.captions)) {
+    throw new Error(payload.error || "Could not generate Reddit narration.");
+  }
+
+  const narrationPath = join(workDir, "reddit-narration.mp3");
+  await writeFile(narrationPath, Buffer.from(payload.audioBase64, "base64"));
+
+  return {
+    narrationPath,
+    captions: payload.captions,
+    duration: Number(payload.duration),
+    voice,
+    rate
+  };
 }
 
 function isCloudflareChallenge(value) {
@@ -1732,6 +1831,181 @@ async function renderRankingVideo({ idea, selectedCandidates, workDir }) {
   return { outputPath, selectedCandidates: entries };
 }
 
+async function resolveParkourVideoPath(workDir) {
+  const repositoryPath = resolve("app", "assets", "videos", "parkour.mp4");
+
+  if (await pathExists(repositoryPath)) {
+    return repositoryPath;
+  }
+
+  const response = await fetch(`${configuredAppBaseUrl()}/assets/videos/parkour.mp4`, {
+    signal: AbortSignal.timeout(120000)
+  });
+
+  if (!response.ok) {
+    throw new Error(`Could not download the bundled parkour video (HTTP ${response.status}).`);
+  }
+
+  const outputPath = join(workDir, "parkour.mp4");
+  await writeFile(outputPath, Buffer.from(await response.arrayBuffer()));
+  return outputPath;
+}
+
+function storyVideoFilters({ accentColor, captions, duration, title }) {
+  const titleLayout = titleTextLayout(title);
+  const filters = [
+    `scale=${OUTPUT_WIDTH}:${OUTPUT_HEIGHT}:force_original_aspect_ratio=increase:flags=fast_bilinear`,
+    `crop=${OUTPUT_WIDTH}:${OUTPUT_HEIGHT}`,
+    "setsar=1",
+    "fps=30",
+    "setpts=N/(30*TB)",
+    "format=yuv420p",
+    `drawbox=x=350:y=132:w=380:h=62:color=${accentColor.ffmpeg}:t=fill`,
+    drawText({
+      text: "REDDIT STORY",
+      x: "(w-text_w)/2",
+      y: 147,
+      size: 31,
+      color: "black",
+      border: 0
+    })
+  ];
+
+  titleLayout.lines.forEach((line, index) => {
+    filters.push(drawText({
+      text: line,
+      x: "(w-text_w)/2",
+      y: 225 + index * titleLayout.lineHeight,
+      size: titleLayout.size,
+      color: "white",
+      border: 6
+    }));
+  });
+
+  captions.forEach((caption, captionIndex) => {
+    const start = Math.max(0, Number(caption.start) - STORY_CAPTION_LEAD_SECONDS).toFixed(3);
+    const end = Math.min(duration, Number(caption.end) + 0.08).toFixed(3);
+    const lines = wrapTextByCharacters(String(caption.text || "").toUpperCase(), 15).slice(0, 2);
+    const lineHeight = 108;
+    const startY = 1010 - ((lines.length - 1) * lineHeight) / 2;
+
+    lines.forEach((line, lineIndex) => {
+      filters.push(drawText({
+        text: line,
+        x: "(w-text_w)/2",
+        y: startY + lineIndex * lineHeight,
+        size: 94,
+        color: (captionIndex + lineIndex) % 3 === 1 ? accentColor.ffmpeg : "white",
+        border: 9,
+        enable: `between(t\\,${start}\\,${end})`
+      }));
+    });
+  });
+
+  filters.push(`trim=0:${duration.toFixed(3)}`, "setpts=PTS-STARTPTS", "format=yuv420p");
+  return `[0:v]${filters.join(",")}[v]`;
+}
+
+async function renderRedditStoryVideo({ story, narration, workDir }) {
+  const parkourPath = await resolveParkourVideoPath(workDir);
+  const parkourDuration = await probeDuration(parkourPath);
+  const backgroundStart = Math.random() * Math.max(0, parkourDuration - 2);
+  const outputPath = join(workDir, "reddit-story-short.mp4");
+  const accentColor = randomAccentColor();
+  const duration = Math.max(1, narration.duration);
+  const videoFilter = storyVideoFilters({
+    accentColor,
+    captions: narration.captions,
+    duration,
+    title: story.title
+  });
+  const audioFilter = `[1:a]atrim=0:${duration.toFixed(3)},asetpts=PTS-STARTPTS,volume=1.08,aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo[a]`;
+
+  console.log(
+    `Rendering ${duration.toFixed(1)}s Reddit story from ${story.subreddit} with ${narration.captions.length} captions`
+  );
+  await run("ffmpeg", [
+    "-y",
+    "-stream_loop",
+    "-1",
+    "-ss",
+    backgroundStart.toFixed(3),
+    "-i",
+    parkourPath,
+    "-i",
+    narration.narrationPath,
+    "-t",
+    duration.toFixed(3),
+    "-filter_complex",
+    `${videoFilter};${audioFilter}`,
+    "-map",
+    "[v]",
+    "-map",
+    "[a]",
+    "-r",
+    "30",
+    "-c:v",
+    "libx264",
+    "-preset",
+    "veryfast",
+    "-crf",
+    "24",
+    "-c:a",
+    "aac",
+    "-b:a",
+    "128k",
+    "-ar",
+    "44100",
+    "-ac",
+    "2",
+    "-movflags",
+    "+faststart",
+    outputPath
+  ]);
+
+  const outputStat = await stat(outputPath);
+  console.log(`Rendered ${Math.round(outputStat.size / 1024 / 1024)} MB Reddit MP4`);
+  return outputPath;
+}
+
+function viralStoryVideoTitle(value) {
+  const firstEmoji = randomItem(["😳", "👀", "🤯", "😱", "🔥"]);
+  const secondEmoji = randomItem(["📖", "😨", "👀", "🤯"]);
+  const suffix = " | Reddit Story";
+  const maximumLength = 100 - suffix.length - firstEmoji.length - secondEmoji.length - 4;
+  const cleanTitle = cleanText(value, "This Story Gets Wild");
+  const title = cleanTitle.length > maximumLength
+    ? `${cleanTitle.slice(0, maximumLength - 3).trim()}...`
+    : cleanTitle;
+  return `${firstEmoji} ${title}${suffix} ${secondEmoji}`.slice(0, 100);
+}
+
+function buildRedditDescription(story) {
+  const cleanStory = cleanText(story.story);
+  const firstSentenceEnd = cleanStory.search(/[.!?](?:\s|$)/);
+  const rawHook = firstSentenceEnd >= 0 ? cleanStory.slice(0, firstSentenceEnd + 1) : cleanStory;
+  const hook = truncate(rawHook, 170);
+  const source = cleanText(story.subreddit, "Reddit");
+  const normalizedSource = source.toLowerCase();
+  const relatedHashtags = normalizedSource.includes("nosleep") || normalizedSource.includes("letsnotmeet")
+    ? "#NoSleep #ScaryStories #HorrorStories"
+    : normalizedSource.includes("confession") || normalizedSource.includes("trueoffmychest")
+      ? "#Confession #RedditConfessions #TrueStories"
+      : normalizedSource.includes("tifu") || normalizedSource.includes("pettyrevenge")
+        ? "#TIFU #PettyRevenge #RedditStories"
+        : "#RedditStories #Storytime #ViralStories";
+
+  return [
+    `📖 ${story.title} 😳🔥`,
+    hook ? `👀 ${hook}` : "👀 This story gets crazier the longer it goes...",
+    `This ${source} story had me watching until the very end. 🤯`,
+    "What would YOU have done? Drop your answer in the comments. 👇💬",
+    "👍 Like for more stories and subscribe so you do not miss the next one! 🔔⛏️",
+    "",
+    `${relatedHashtags} #MinecraftParkour #Minecraft #Shorts #YouTubeShorts #FYP`
+  ].join("\n");
+}
+
 function youtubeAuth() {
   const missing = ["YOUTUBE_CLIENT_ID", "YOUTUBE_CLIENT_SECRET", "YOUTUBE_REFRESH_TOKEN"].filter(
     (key) => !process.env[key]
@@ -1753,13 +2027,13 @@ function youtubeAuth() {
   return oauth2Client;
 }
 
-async function uploadToYouTube({ description, filePath, hashtags, title }) {
+async function uploadToYouTube({ description, filePath, hashtags, title, titleMode = "ranking" }) {
   const youtube = google.youtube({ version: "v3", auth: youtubeAuth() });
   const response = await youtube.videos.insert({
     part: ["snippet", "status"],
     requestBody: {
       snippet: {
-        title: viralVideoTitle(title),
+        title: titleMode === "story" ? viralStoryVideoTitle(title) : viralVideoTitle(title),
         description: description.slice(0, 5000),
         tags: uploadTagsFromDescription(description, hashtags),
         categoryId: process.env.YOUTUBE_CATEGORY_ID || "24"
@@ -1836,6 +2110,21 @@ async function rememberUploadedTikToks(selectedCandidates) {
   await upsertRepoVariable("RECENT_TIKTOK_IDS", uniqueIds.join(","));
 }
 
+async function rememberUploadedRedditStory(story) {
+  const previousIds = String(process.env.RECENT_REDDIT_IDS || "")
+    .split(",")
+    .map((id) => id.trim())
+    .filter(Boolean);
+  const storyId = redditStoryId(story.sourceUrl);
+
+  if (!storyId) {
+    return;
+  }
+
+  const uniqueIds = [...new Set([storyId, ...previousIds])].slice(0, 120);
+  await upsertRepoVariable("RECENT_REDDIT_IDS", uniqueIds.join(","));
+}
+
 async function main() {
   const force = process.env.FORCE_UPLOAD === "true";
   const scheduleTimes = parseScheduleInput(process.env.UPLOAD_SCHEDULE_TIMES);
@@ -1858,28 +2147,69 @@ async function main() {
   const workDir = await mkdtemp(join(tmpdir(), "ytshort-action-"));
 
   try {
-    const idea = await findViralIdea();
-    const selectedCandidates = idea.candidates.slice(0, 12);
-    const { outputPath, selectedCandidates: uploadedCandidates } = await renderRankingVideo({
-      idea: { ...idea, candidates: selectedCandidates },
-      selectedCandidates,
-      workDir
-    });
-    const description = idea.description || buildViralFallbackDescription(idea, selectedCandidates.slice(0, RANK_COUNT));
-    const url = await uploadToYouTube({
-      description,
-      filePath: outputPath,
-      hashtags: idea.hashtags || [],
-      title: idea.title
-    });
+    const skipUpload = process.env.SKIP_YOUTUBE_UPLOAD === "true";
+    const requestedMode = String(process.env.UPLOAD_CONTENT_MODE || "random").toLowerCase();
+    const contentMode = requestedMode === "ranking" || requestedMode === "story"
+      ? requestedMode
+      : Math.random() < 0.5
+        ? "ranking"
+        : "story";
+    let url;
+
+    console.log(`Selected scheduled content mode: ${contentMode}`);
+
+    if (contentMode === "story") {
+      const story = await findRedditStory();
+      console.log(`Selected Reddit story from ${story.subreddit}: ${story.title}`);
+      const narration = await generateStoryNarration(story, workDir);
+      console.log(`Generated narration with ${narration.voice} at +${narration.rate}%`);
+      const outputPath = await renderRedditStoryVideo({ story, narration, workDir });
+      const description = buildRedditDescription(story);
+      url = skipUpload
+        ? `dry-run:${outputPath}`
+        : await uploadToYouTube({
+            description,
+            filePath: outputPath,
+            hashtags: uploadTagsFromDescription(description),
+            title: story.title,
+            titleMode: "story"
+          });
+
+      if (!skipUpload) {
+        await rememberUploadedRedditStory(story);
+      }
+    } else {
+      const idea = await findViralIdea();
+      const selectedCandidates = idea.candidates.slice(0, 12);
+      const { outputPath, selectedCandidates: uploadedCandidates } = await renderRankingVideo({
+        idea: { ...idea, candidates: selectedCandidates },
+        selectedCandidates,
+        workDir
+      });
+      const description = idea.description || buildViralFallbackDescription(
+        idea,
+        selectedCandidates.slice(0, RANK_COUNT)
+      );
+      url = skipUpload
+        ? `dry-run:${outputPath}`
+        : await uploadToYouTube({
+            description,
+            filePath: outputPath,
+            hashtags: idea.hashtags || [],
+            title: idea.title
+          });
+
+      if (!skipUpload) {
+        await rememberUploadedTikToks(uploadedCandidates);
+      }
+    }
 
     console.log(`Uploaded: ${url}`);
 
-    if (!force && slot.slotId) {
+    if (!skipUpload && !force && slot.slotId) {
       await upsertRepoVariable("LAST_UPLOAD_SLOT", slot.slotId);
     }
 
-    await rememberUploadedTikToks(uploadedCandidates);
   } finally {
     await rm(workDir, { recursive: true, force: true });
   }

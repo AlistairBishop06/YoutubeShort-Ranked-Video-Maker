@@ -1,6 +1,6 @@
 # YouTube Shorts Ranking Video Generator
 
-This is a local Next.js app for generating vertical 9:16 ranking videos from TikTok links.
+This is a local Next.js app for generating vertical 9:16 ranking videos and narrated Reddit story videos.
 
 The app lets you:
 
@@ -22,6 +22,9 @@ The app lets you:
 - Auto-run every 15 minutes to find a new idea, generate a new video, and upload it.
 - Schedule daily upload slots like `5am, 7am, 9am, 11am`.
 - Save that schedule to GitHub Actions so uploads continue when the browser is closed.
+- Generate story ideas from eight viral story communities with randomized top, hot, and new feeds, or import a specific Reddit post.
+- Narrate the story with text-to-speech over the bundled Minecraft parkour video.
+- Generate synchronized viral-style captions from TTS word timestamps.
 
 The app is designed for quick “Top 5” style videos, for example:
 
@@ -63,6 +66,30 @@ http://127.0.0.1:3000
 9. Download the finished video.
 
 TikTok clips are downloaded into `.tmp/tiktok-clips` temporarily and cleaned up after generation.
+
+## Reddit Story Mode
+
+Select `Reddit Story` at the top of the editor.
+
+1. Click `Generate Story Idea` to pull a complete story from `r/confession`, `r/nosleep`, or `r/stories`. You can also import a specific Reddit URL or paste text manually.
+2. Edit the story title and text. The combined narration can contain up to 6,000 characters.
+3. Choose a voice and voice pace.
+4. Click `Generate Story Video`.
+5. The app generates speech and timed captions, starts `app/assets/videos/parkour.mp4` at a random timestamp, loops it if needed, and records a 1080x1920 video at 30fps using the browser's native recorder. Rendering runs in real time instead of slowly software-encoding every frame through FFmpeg.
+6. Copy the automatically generated YouTube description with story-specific emojis, engagement prompts, and hashtags, or enable auto-upload to use it automatically.
+
+Chrome exports Reddit stories as MP4 when supported. Firefox falls back to WebM, which can still be previewed, downloaded, and uploaded to YouTube. Ranking videos continue to use FFmpeg and export as MP4.
+
+The parkour file is copied to `public/assets/videos/parkour.mp4` during `npm install`. Keep the source file at `app/assets/videos/parkour.mp4` so local and Vercel builds include it.
+
+Text-to-speech uses the free Microsoft Edge online speech service through `node-edge-tts`; no paid API key is required. This is an unofficial online endpoint, so keep manual narration or a replacement TTS provider in mind if Microsoft changes access.
+
+Story idea generation reads Reddit's public RSS feeds and does not need API credentials. If Reddit rate-limits the server, the app falls back to the free keyless RSS2JSON relay and caches the result for 30 minutes. Reddit often blocks unauthenticated JSON requests for individual post imports from hosted servers. Manual story paste always works. To make URL import reliable, create a free Reddit script app at [reddit.com/prefs/apps](https://www.reddit.com/prefs/apps) and add these environment variables locally and in Vercel:
+
+```env
+REDDIT_CLIENT_ID=your_reddit_app_client_id
+REDDIT_CLIENT_SECRET=your_reddit_app_client_secret
+```
 
 ## Smart Highlights And Clip Filtering
 
@@ -150,7 +177,7 @@ Important: this schedule is browser-based in the current version. Keep the app o
 
 ## Closed-Tab Scheduling With GitHub Actions
 
-The app can save your selected daily upload times into GitHub Actions repository variables. The workflow in `.github/workflows/scheduled-upload.yml` runs every 15 minutes, checks those saved times, and only generates/uploads when the current time matches a scheduled slot.
+The app can save your selected daily upload times into GitHub Actions repository variables. The workflow in `.github/workflows/scheduled-upload.yml` runs every 15 minutes, checks those saved times, and only generates/uploads when the current time matches a scheduled slot. Each matched upload has a 50% chance of producing a TikTok Top 5 and a 50% chance of producing a narrated Reddit story over the bundled parkour video.
 
 This means the upload schedule can keep running even when the website tab is closed!
 
@@ -336,6 +363,7 @@ YOUTUBE_CATEGORY_ID=24
 CLIP_MODE=smart
 CLIP_DURATION_SECONDS=15
 UPLOAD_SCHEDULE_WINDOW_MINUTES=15
+UPLOAD_CONTENT_MODE=random
 ```
 
 Keep `YOUTUBE_PRIVACY_STATUS=private` until you have tested successfully.
@@ -491,6 +519,16 @@ RECENT_TIKTOK_IDS=...
 ```
 
 You do not need to create `RECENT_TIKTOK_IDS` manually. It stores recently uploaded TikTok video IDs so future scheduled runs can avoid generating the exact same video when a topic comes up again.
+
+The workflow also auto-manages:
+
+```text
+RECENT_REDDIT_IDS=...
+```
+
+This prevents recently uploaded Reddit posts from being selected again. You do not need to create it manually.
+
+`UPLOAD_CONTENT_MODE` is optional. Leave it unset or set it to `random` for the default 50/50 split. Set it temporarily to `ranking` or `story` only when testing a specific scheduled pipeline.
 
 ### Step 10: Test The Workflow Manually
 
