@@ -494,6 +494,7 @@ This creates or updates these GitHub repository variables:
 UPLOAD_SCHEDULE_ENABLED=true
 UPLOAD_SCHEDULE_TIMES=05:00,07:00,09:00,11:00
 UPLOAD_SCHEDULE_TIMEZONE=your_local_timezone
+UPLOAD_CONTENT_MODE=random
 UPLOAD_IDEA_CREATOR_IDS=selected_creator_ids
 UPLOAD_IDEA_TITLE_IDS=selected_title_style_ids
 UPLOAD_STORY_SUBREDDIT_IDS=selected_subreddit_ids
@@ -531,7 +532,7 @@ RECENT_REDDIT_IDS=...
 
 This prevents recently uploaded Reddit posts from being selected again. You do not need to create it manually.
 
-`UPLOAD_CONTENT_MODE` is optional. Leave it unset or set it to `random` for the default 50/50 split. Set it temporarily to `ranking` or `story` only when testing a specific scheduled pipeline.
+The `Scheduled video mix` control at the top of the app manages `UPLOAD_CONTENT_MODE`. Choose `Both` for a 50/50 split, `Ranking` for ranking-only scheduled uploads, or `Story` for story-only scheduled uploads, then click `Save`.
 
 ### Step 10: Test The Workflow Manually
 

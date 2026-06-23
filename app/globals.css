@@ -130,6 +130,95 @@ h2 {
   flex: 0 0 auto;
 }
 
+.upload-content-mode {
+  display: grid;
+  grid-template-columns: minmax(180px, 0.55fr) minmax(330px, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  margin: 0 0 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.035);
+  padding: 9px;
+}
+
+.upload-content-mode-heading {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 9px;
+  color: var(--accent);
+  padding: 0 4px;
+}
+
+.upload-content-mode-heading div,
+.upload-content-mode-options button span {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.upload-content-mode-heading strong,
+.upload-content-mode-heading span,
+.upload-content-mode-options strong,
+.upload-content-mode-options small {
+  line-height: 1.05;
+}
+
+.upload-content-mode-heading strong {
+  color: var(--text);
+  font-size: 0.84rem;
+}
+
+.upload-content-mode-heading span {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 800;
+}
+
+.upload-content-mode-options {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  min-height: 44px;
+  gap: 5px;
+}
+
+.upload-content-mode-options button {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  min-width: 0;
+  align-items: center;
+  gap: 7px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: rgba(255, 255, 255, 0.055);
+  color: var(--muted);
+  cursor: pointer;
+  padding: 6px 8px;
+  text-align: left;
+}
+
+.upload-content-mode-options button[data-active="true"] {
+  border-color: rgba(57, 255, 136, 0.55);
+  background: rgba(57, 255, 136, 0.14);
+  color: var(--accent);
+}
+
+.upload-content-mode-options strong {
+  color: var(--text);
+  font-size: 0.76rem;
+}
+
+.upload-content-mode-options small {
+  color: inherit;
+  font-size: 0.66rem;
+  font-weight: 850;
+}
+
+.upload-content-mode-save {
+  min-width: 86px;
+}
+
 .creation-mode-switch {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1330,6 +1419,7 @@ h2 {
   .idea-top,
   .idea-summary,
   .description-head,
+  .upload-content-mode,
   .schedule-row,
   .github-schedule-panel,
   .form-grid,
@@ -1351,6 +1441,13 @@ h2 {
 
   .reddit-source-actions .secondary-button {
     flex: 1;
+  }
+
+  .idea-top,
+  .idea-summary,
+  .description-head {
+    display: grid;
+    width: 100%;
   }
 
   .reddit-filter-save {

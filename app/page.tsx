@@ -19,6 +19,7 @@ import {
   Mic2,
   Play,
   Search,
+  Shuffle,
   SlidersHorizontal,
   Upload,
   Wand2,
@@ -90,11 +91,14 @@ type YouTubeStatus = {
   privacyStatus: string;
 };
 
+type UploadContentMode = "random" | "ranking" | "story";
+
 type GitHubScheduleStatus = {
   configured: boolean;
   missing: string[];
   schedule?: {
     enabled: boolean;
+    contentMode?: UploadContentMode;
     ideaSearch?: {
       creatorIds: string[];
       titleIds: string[];
@@ -174,6 +178,19 @@ const REDDIT_VOICES = [
   { id: "en-US-BrianNeural", label: "Brian", detail: "Deep male" },
   { id: "en-US-EmmaNeural", label: "Emma", detail: "Natural female" }
 ];
+const UPLOAD_CONTENT_MODE_OPTIONS: Array<{
+  id: UploadContentMode;
+  label: string;
+  detail: string;
+}> = [
+  { id: "random", label: "Both", detail: "50/50" },
+  { id: "ranking", label: "Ranking", detail: "only" },
+  { id: "story", label: "Story", detail: "only" }
+];
+
+function uploadContentModeText(mode: UploadContentMode) {
+  return mode === "random" ? "Both (50/50)" : mode === "ranking" ? "Ranking only" : "Story only";
+}
 const ACCENT_COLORS: AccentColor[] = [
   { hex: "#39ff88", ffmpeg: "0x39ff88" },
   { hex: "#ff335f", ffmpeg: "0xff335f" },
@@ -2522,6 +2539,7 @@ export default function Home() {
   const [dailyScheduleCountdown, setDailyScheduleCountdown] = useState("off");
   const [dailyScheduleRunCount, setDailyScheduleRunCount] = useState(0);
   const [githubScheduleEnabled, setGithubScheduleEnabled] = useState(false);
+  const [uploadContentMode, setUploadContentMode] = useState<UploadContentMode>("random");
   const [githubScheduleStatus, setGithubScheduleStatus] = useState<GitHubScheduleStatus | null>(null);
   const [githubScheduleMessage, setGithubScheduleMessage] = useState("Not saved to GitHub yet");
   const [githubScheduleTimezone, setGithubScheduleTimezone] = useState("UTC");
@@ -2608,6 +2626,7 @@ export default function Home() {
   const redditSourceSummary = `${redditSubredditIds.length} subreddit${
     redditSubredditIds.length === 1 ? "" : "s"
   }`;
+  const uploadContentModeSummary = uploadContentModeText(uploadContentMode);
   const redditCharacterCount = useMemo(
     () => narrationCharacterCount(redditTitle, redditStory),
     [redditStory, redditTitle]
@@ -2655,6 +2674,8 @@ export default function Home() {
         }
 
         const savedSchedule = payload.schedule;
+
+        setUploadContentMode(savedSchedule?.contentMode || "random");
 
         if (savedSchedule?.times?.length) {
           setDailyScheduleInput(savedSchedule.times.join(", "));
@@ -2793,6 +2814,17 @@ export default function Home() {
     return () => window.clearInterval(timer);
   }, [dailyScheduleEnabled, nextDailyRunAt, isFindingIdea, isGenerating, isUploadingYoutube]);
 
+  function selectUploadContentMode(nextMode: UploadContentMode) {
+    setUploadContentMode(nextMode);
+    setGithubScheduleMessage(`${uploadContentModeText(nextMode)} selected. Save to apply to GitHub runs.`);
+
+    if (nextMode === "ranking") {
+      setAppMode("ranking");
+    } else if (nextMode === "story") {
+      setAppMode("reddit");
+    }
+  }
+
   function updateEntry(rank: number, patch: Partial<RankingEntry>) {
     setEntries((current) =>
       current.map((entry) => (entry.rank === rank ? { ...entry, ...patch } : entry))
@@ -2889,6 +2921,7 @@ export default function Home() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           enabled: githubScheduleEnabled,
+          contentMode: uploadContentMode,
           ideaSearch: {
             creatorIds: selectedIdeaSearch.creatorIds,
             titleIds: selectedIdeaSearch.titleIds
@@ -2913,8 +2946,8 @@ export default function Home() {
       });
       setGithubScheduleMessage(
         payload.schedule?.enabled
-          ? `Saved. GitHub Actions will run at ${payload.schedule.times.join(", ")} ${payload.schedule.timezone} using ${ideaSearchSummary} and ${redditSourceSummary}.`
-          : `Saved. GitHub Actions schedule is disabled. Filters saved for ${ideaSearchSummary} and ${redditSourceSummary}.`
+          ? `Saved. ${uploadContentModeSummary} at ${payload.schedule.times.join(", ")} ${payload.schedule.timezone}.`
+          : `Saved ${uploadContentModeSummary}; GitHub Actions schedule is disabled.`
       );
     } catch (error) {
       const message = error instanceof Error ? error.message : "Could not save GitHub schedule.";
@@ -3885,6 +3918,54 @@ export default function Home() {
                 {statusText}
               </div>
             </div>
+          </div>
+
+          <div className="upload-content-mode" aria-label="Scheduled video type">
+            <div className="upload-content-mode-heading">
+              <Shuffle size={19} />
+              <div>
+                <strong>Scheduled video mix</strong>
+                <span>{uploadContentModeSummary}</span>
+              </div>
+            </div>
+
+            <div className="upload-content-mode-options" role="radiogroup" aria-label="Scheduled video mix">
+              {UPLOAD_CONTENT_MODE_OPTIONS.map((option) => (
+                <button
+                  type="button"
+                  role="radio"
+                  aria-checked={uploadContentMode === option.id}
+                  data-active={uploadContentMode === option.id}
+                  onClick={() => selectUploadContentMode(option.id)}
+                  key={option.id}
+                >
+                  {option.id === "random" ? (
+                    <Shuffle size={17} />
+                  ) : option.id === "ranking" ? (
+                    <ListOrdered size={17} />
+                  ) : (
+                    <BookOpen size={17} />
+                  )}
+                  <span>
+                    <strong>{option.label}</strong>
+                    <small>{option.detail}</small>
+                  </span>
+                </button>
+              ))}
+            </div>
+
+            <button
+              type="button"
+              className="secondary-button compact-button upload-content-mode-save"
+              onClick={saveGithubSchedule}
+              disabled={
+                isSavingGithubSchedule ||
+                Boolean(parsedDailySchedule.error || ideaSearchError || redditSourceError)
+              }
+            >
+              {isSavingGithubSchedule ? <Loader2 size={17} className="spin" /> : <Github size={17} />}
+              Save
+            </button>
           </div>
 
           <div className="creation-mode-switch" role="tablist" aria-label="Video type">

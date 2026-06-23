@@ -16,6 +16,7 @@ export const runtime = "nodejs";
 
 const VARIABLE_NAMES = {
   enabled: "UPLOAD_SCHEDULE_ENABLED",
+  contentMode: "UPLOAD_CONTENT_MODE",
   ideaCreators: "UPLOAD_IDEA_CREATOR_IDS",
   ideaTitles: "UPLOAD_IDEA_TITLE_IDS",
   redditSubreddits: "UPLOAD_STORY_SUBREDDIT_IDS",
@@ -23,6 +24,12 @@ const VARIABLE_NAMES = {
   times: "UPLOAD_SCHEDULE_TIMES",
   timezone: "UPLOAD_SCHEDULE_TIMEZONE"
 };
+
+type UploadContentMode = "random" | "ranking" | "story";
+
+function normalizeContentMode(value: unknown): UploadContentMode {
+  return value === "ranking" || value === "story" ? value : "random";
+}
 
 function normalizeDailyTimeToken(token: string) {
   const compact = token.trim().toLowerCase().replace(/\s+/g, "");
@@ -231,6 +238,7 @@ export async function GET() {
       missing,
       schedule: {
         enabled: false,
+        contentMode: "random",
         ideaSearch: DEFAULT_IDEA_SEARCH_SETTINGS,
         redditStory: DEFAULT_REDDIT_STORY_SETTINGS,
         times: [],
@@ -241,8 +249,9 @@ export async function GET() {
   }
 
   try {
-    const [enabled, times, timezone, ideaCreators, ideaTitles, redditSubreddits] = await Promise.all([
+    const [enabled, contentModeValue, times, timezone, ideaCreators, ideaTitles, redditSubreddits] = await Promise.all([
       readOptionalVariable(VARIABLE_NAMES.enabled),
+      readOptionalVariable(VARIABLE_NAMES.contentMode),
       readOptionalVariable(VARIABLE_NAMES.times),
       readOptionalVariable(VARIABLE_NAMES.timezone),
       readOptionalVariable(VARIABLE_NAMES.ideaCreators),
@@ -263,6 +272,7 @@ export async function GET() {
       missing: [],
       schedule: {
         enabled: enabled === "true",
+        contentMode: normalizeContentMode(contentModeValue),
         ideaSearch: {
           creatorIds: ideaSearch.creatorIds,
           titleIds: ideaSearch.titleIds
@@ -286,6 +296,7 @@ export async function POST(request: NextRequest) {
   try {
     const body = (await request.json()) as {
       enabled?: boolean;
+      contentMode?: UploadContentMode;
       ideaSearch?: IdeaSearchSettingsInput;
       redditStory?: RedditStorySettingsInput;
       times?: string;
@@ -293,6 +304,7 @@ export async function POST(request: NextRequest) {
     };
     const parsed = parseScheduleInput(body.times ?? "");
     const timezone = assertValidTimeZone(body.timezone || "UTC");
+    const contentMode = normalizeContentMode(body.contentMode);
     const ideaSearch = normalizeIdeaSearchSettings(body.ideaSearch);
     const redditStory = normalizeRedditStorySettings(body.redditStory);
 
@@ -305,6 +317,7 @@ export async function POST(request: NextRequest) {
     }
 
     await upsertVariable(VARIABLE_NAMES.enabled, body.enabled ? "true" : "false");
+    await upsertVariable(VARIABLE_NAMES.contentMode, contentMode);
     await upsertVariable(VARIABLE_NAMES.ideaCreators, ideaSearch.creatorIds.join(","));
     await upsertVariable(VARIABLE_NAMES.ideaTitles, ideaSearch.titleIds.join(","));
     await upsertVariable(VARIABLE_NAMES.redditSubreddits, redditStory.subredditIds.join(","));
@@ -315,6 +328,7 @@ export async function POST(request: NextRequest) {
       configured: true,
       schedule: {
         enabled: Boolean(body.enabled),
+        contentMode,
         ideaSearch: {
           creatorIds: ideaSearch.creatorIds,
           titleIds: ideaSearch.titleIds
