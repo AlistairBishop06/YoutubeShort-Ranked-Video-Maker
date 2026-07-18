@@ -104,6 +104,49 @@ function parseIdInput(value) {
     .filter(Boolean);
 }
 
+function parseCustomTitleInput(value) {
+  const raw = String(value || "").trim();
+
+  if (!raw) {
+    return [];
+  }
+
+  try {
+    const parsed = JSON.parse(raw);
+
+    if (Array.isArray(parsed)) {
+      return normalizeCustomTitles(parsed);
+    }
+  } catch {
+    // Support a simple manual variable format if JSON is edited by hand.
+  }
+
+  return normalizeCustomTitles(raw.split(/\r?\n|\|/));
+}
+
+function normalizeCustomTitles(values) {
+  const seen = new Set();
+  const titles = [];
+
+  for (const value of values) {
+    const title = cleanText(value).slice(0, 64).trim();
+    const key = title.toLowerCase();
+
+    if (title.length < 2 || seen.has(key)) {
+      continue;
+    }
+
+    seen.add(key);
+    titles.push(title);
+
+    if (titles.length >= 30) {
+      break;
+    }
+  }
+
+  return titles;
+}
+
 function zonedParts(date, timeZone) {
   const parts = new Intl.DateTimeFormat("en-CA", {
     timeZone,
@@ -475,6 +518,7 @@ async function findViralIdea() {
     .filter(Boolean);
   const creatorIds = parseIdInput(process.env.UPLOAD_IDEA_CREATOR_IDS);
   const titleIds = parseIdInput(process.env.UPLOAD_IDEA_TITLE_IDS);
+  const customTitleValues = parseCustomTitleInput(process.env.UPLOAD_IDEA_CUSTOM_TITLES);
 
   const response = await fetch(`${appBaseUrl}/api/ideas/find`, {
     method: "POST",
@@ -483,7 +527,8 @@ async function findViralIdea() {
       excludeIds,
       ideaSearch: {
         creatorIds,
-        titleIds
+        titleIds,
+        customTitleValues
       }
     })
   });

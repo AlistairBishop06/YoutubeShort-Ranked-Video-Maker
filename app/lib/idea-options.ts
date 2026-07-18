@@ -8,15 +8,21 @@ export type IdeaOption = {
 export type IdeaSearchSettingsInput = {
   creatorIds?: string[];
   titleIds?: string[];
+  customTitleValues?: string[];
 };
 
 export type NormalizedIdeaSearchSettings = {
   creatorIds: string[];
   titleIds: string[];
+  customTitleValues: string[];
   creators: string[];
   titleVariants: string[];
+  usesCustomTitles: boolean;
   isCustom: boolean;
 };
+
+export const MAX_CUSTOM_TITLE_VALUES = 30;
+export const MAX_CUSTOM_TITLE_LENGTH = 64;
 
 const CREATOR_VALUES = [
   "speed",
@@ -185,7 +191,8 @@ export const TITLE_SEARCH_OPTIONS = TITLE_VARIANT_VALUES.map((value) =>
 
 export const DEFAULT_IDEA_SEARCH_SETTINGS = {
   creatorIds: CREATOR_SEARCH_OPTIONS.map((option) => option.id),
-  titleIds: TITLE_SEARCH_OPTIONS.map((option) => option.id)
+  titleIds: TITLE_SEARCH_OPTIONS.map((option) => option.id),
+  customTitleValues: [] as string[]
 };
 
 function uniqueValidIds(ids: unknown, options: IdeaOption[]) {
@@ -202,6 +209,42 @@ function valuesForIds(options: IdeaOption[], ids: string[]) {
   return options.filter((option) => selected.has(option.id)).map((option) => option.value);
 }
 
+function normalizeCustomTitleValue(value: unknown) {
+  return String(value || "")
+    .replace(/[\r\n\t]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, MAX_CUSTOM_TITLE_LENGTH)
+    .trim();
+}
+
+function uniqueCustomTitleValues(values: unknown) {
+  if (!Array.isArray(values)) {
+    return [];
+  }
+
+  const seen = new Set<string>();
+  const normalized: string[] = [];
+
+  for (const value of values) {
+    const title = normalizeCustomTitleValue(value);
+    const key = title.toLowerCase();
+
+    if (title.length < 2 || seen.has(key)) {
+      continue;
+    }
+
+    seen.add(key);
+    normalized.push(title);
+
+    if (normalized.length >= MAX_CUSTOM_TITLE_VALUES) {
+      break;
+    }
+  }
+
+  return normalized;
+}
+
 function isCustomSelection(ids: string[], defaultIds: string[]) {
   return ids.length !== defaultIds.length || ids.some((id) => !defaultIds.includes(id));
 }
@@ -211,15 +254,22 @@ export function normalizeIdeaSearchSettings(
 ): NormalizedIdeaSearchSettings {
   const creatorIds = uniqueValidIds(input?.creatorIds, CREATOR_SEARCH_OPTIONS);
   const titleIds = uniqueValidIds(input?.titleIds, TITLE_SEARCH_OPTIONS);
+  const customTitleValues = uniqueCustomTitleValues(input?.customTitleValues);
   const resolvedCreatorIds = creatorIds.length ? creatorIds : DEFAULT_IDEA_SEARCH_SETTINGS.creatorIds;
   const resolvedTitleIds = titleIds.length ? titleIds : DEFAULT_IDEA_SEARCH_SETTINGS.titleIds;
+  const usesCustomTitles = customTitleValues.length > 0;
 
   return {
     creatorIds: resolvedCreatorIds,
     titleIds: resolvedTitleIds,
+    customTitleValues,
     creators: valuesForIds(CREATOR_SEARCH_OPTIONS, resolvedCreatorIds),
-    titleVariants: valuesForIds(TITLE_SEARCH_OPTIONS, resolvedTitleIds),
+    titleVariants: usesCustomTitles
+      ? customTitleValues
+      : valuesForIds(TITLE_SEARCH_OPTIONS, resolvedTitleIds),
+    usesCustomTitles,
     isCustom:
+      usesCustomTitles ||
       isCustomSelection(resolvedCreatorIds, DEFAULT_IDEA_SEARCH_SETTINGS.creatorIds) ||
       isCustomSelection(resolvedTitleIds, DEFAULT_IDEA_SEARCH_SETTINGS.titleIds)
   };
@@ -230,4 +280,28 @@ export function parseIdeaSearchIdList(value: string | undefined) {
     .split(/[\s,;]+/)
     .map((item) => item.trim())
     .filter(Boolean);
+}
+
+export function parseIdeaCustomTitleList(value: string | undefined) {
+  const raw = String(value || "").trim();
+
+  if (!raw) {
+    return [];
+  }
+
+  try {
+    const parsed = JSON.parse(raw);
+
+    if (Array.isArray(parsed)) {
+      return uniqueCustomTitleValues(parsed);
+    }
+  } catch {
+    // Fall through to the looser manual variable format below.
+  }
+
+  return uniqueCustomTitleValues(raw.split(/\r?\n|\|/));
+}
+
+export function stringifyIdeaCustomTitleList(values: string[]) {
+  return JSON.stringify(uniqueCustomTitleValues(values));
 }

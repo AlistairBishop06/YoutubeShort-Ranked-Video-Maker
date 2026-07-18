@@ -18,17 +18,21 @@ import {
   Loader2,
   Mic2,
   Play,
+  Plus,
   Search,
   Shuffle,
   SlidersHorizontal,
+  Trash2,
   Upload,
   Wand2,
   Youtube
 } from "lucide-react";
-import { ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
+import { ChangeEvent, FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import {
   CREATOR_SEARCH_OPTIONS,
   DEFAULT_IDEA_SEARCH_SETTINGS,
+  MAX_CUSTOM_TITLE_LENGTH,
+  MAX_CUSTOM_TITLE_VALUES,
   TITLE_SEARCH_OPTIONS,
   normalizeIdeaSearchSettings
 } from "./lib/idea-options";
@@ -102,6 +106,7 @@ type GitHubScheduleStatus = {
     ideaSearch?: {
       creatorIds: string[];
       titleIds: string[];
+      customTitleValues?: string[];
     };
     redditStory?: {
       subredditIds: string[];
@@ -121,6 +126,7 @@ type GenerateVideoOptions = {
 };
 
 type AppMode = "ranking" | "reddit";
+type IdeaFilterTab = "creators" | "styles" | "custom";
 
 type RedditCaption = {
   text: string;
@@ -186,6 +192,15 @@ const UPLOAD_CONTENT_MODE_OPTIONS: Array<{
   { id: "random", label: "Both", detail: "50/50" },
   { id: "ranking", label: "Ranking", detail: "only" },
   { id: "story", label: "Story", detail: "only" }
+];
+
+const IDEA_FILTER_TABS: Array<{
+  id: IdeaFilterTab;
+  label: string;
+}> = [
+  { id: "creators", label: "Creators" },
+  { id: "styles", label: "Title styles" },
+  { id: "custom", label: "Custom titles" }
 ];
 
 function uploadContentModeText(mode: UploadContentMode) {
@@ -2545,8 +2560,13 @@ export default function Home() {
   const [githubScheduleTimezone, setGithubScheduleTimezone] = useState("UTC");
   const [isSavingGithubSchedule, setIsSavingGithubSchedule] = useState(false);
   const [ideaSearchOpen, setIdeaSearchOpen] = useState(false);
+  const [ideaFilterTab, setIdeaFilterTab] = useState<IdeaFilterTab>("creators");
   const [ideaCreatorIds, setIdeaCreatorIds] = useState<string[]>(DEFAULT_IDEA_SEARCH_SETTINGS.creatorIds);
   const [ideaTitleIds, setIdeaTitleIds] = useState<string[]>(DEFAULT_IDEA_SEARCH_SETTINGS.titleIds);
+  const [ideaCustomTitleValues, setIdeaCustomTitleValues] = useState<string[]>(
+    DEFAULT_IDEA_SEARCH_SETTINGS.customTitleValues
+  );
+  const [customIdeaTitleInput, setCustomIdeaTitleInput] = useState("");
   const [redditSourceOpen, setRedditSourceOpen] = useState(false);
   const [redditSubredditIds, setRedditSubredditIds] = useState<string[]>(
     DEFAULT_REDDIT_STORY_SETTINGS.subredditIds
@@ -2608,20 +2628,27 @@ export default function Home() {
     () =>
       normalizeIdeaSearchSettings({
         creatorIds: ideaCreatorIds,
-        titleIds: ideaTitleIds
+        titleIds: ideaTitleIds,
+        customTitleValues: ideaCustomTitleValues
       }),
-    [ideaCreatorIds, ideaTitleIds]
+    [ideaCreatorIds, ideaTitleIds, ideaCustomTitleValues]
   );
   const selectedRedditStorySettings = useMemo(
     () => normalizeRedditStorySettings({ subredditIds: redditSubredditIds }),
     [redditSubredditIds]
   );
-  const ideaSearchError = !ideaCreatorIds.length
-    ? "Select at least one creator."
-    : !ideaTitleIds.length
-      ? "Select at least one title style."
-      : "";
-  const ideaSearchSummary = `${ideaCreatorIds.length} creators - ${ideaTitleIds.length} titles`;
+  const ideaSearchError = ideaCustomTitleValues.length
+    ? ""
+    : !ideaCreatorIds.length
+      ? "Select at least one creator."
+      : !ideaTitleIds.length
+        ? "Select at least one title style."
+        : "";
+  const ideaSearchSummary = selectedIdeaSearch.usesCustomTitles
+    ? `${selectedIdeaSearch.customTitleValues.length} custom topic${
+        selectedIdeaSearch.customTitleValues.length === 1 ? "" : "s"
+      }`
+    : `${ideaCreatorIds.length} creators - ${ideaTitleIds.length} titles`;
   const redditSourceError = redditSubredditIds.length ? "" : "Select at least one subreddit.";
   const redditSourceSummary = `${redditSubredditIds.length} subreddit${
     redditSubredditIds.length === 1 ? "" : "s"
@@ -2685,6 +2712,10 @@ export default function Home() {
           const savedIdeaSearch = normalizeIdeaSearchSettings(savedSchedule.ideaSearch);
           setIdeaCreatorIds(savedIdeaSearch.creatorIds);
           setIdeaTitleIds(savedIdeaSearch.titleIds);
+          setIdeaCustomTitleValues(savedIdeaSearch.customTitleValues);
+          if (savedIdeaSearch.usesCustomTitles) {
+            setIdeaFilterTab("custom");
+          }
         }
 
         if (savedSchedule?.redditStory) {
@@ -2873,6 +2904,61 @@ export default function Home() {
     updateIdeaSearchIds(kind, []);
   }
 
+  function updateCustomIdeaTitles(values: string[]) {
+    const normalized = normalizeIdeaSearchSettings({
+      creatorIds: ideaCreatorIds,
+      titleIds: ideaTitleIds,
+      customTitleValues: values
+    }).customTitleValues;
+
+    setIdeaCustomTitleValues(normalized);
+    setErrors((current) => {
+      const { ideaSearch, ...rest } = current;
+      return rest;
+    });
+    setGithubScheduleMessage(
+      normalized.length
+        ? `${normalized.length} custom title${normalized.length === 1 ? "" : "s"} selected. Save to apply to GitHub runs.`
+        : "Custom titles cleared. Save to apply title styles to GitHub runs."
+    );
+  }
+
+  function addCustomIdeaTitle(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    const beforeCount = ideaCustomTitleValues.length;
+    const nextTitles = normalizeIdeaSearchSettings({
+      creatorIds: ideaCreatorIds,
+      titleIds: ideaTitleIds,
+      customTitleValues: [...ideaCustomTitleValues, customIdeaTitleInput]
+    }).customTitleValues;
+
+    if (!customIdeaTitleInput.trim()) {
+      setErrors((current) => ({ ...current, ideaSearch: "Type a custom title first." }));
+      return;
+    }
+
+    if (nextTitles.length === beforeCount) {
+      setErrors((current) => ({ ...current, ideaSearch: "That custom title is already added." }));
+      return;
+    }
+
+    setIdeaCustomTitleValues(nextTitles);
+    setCustomIdeaTitleInput("");
+    setIdeaFilterTab("custom");
+    setErrors((current) => {
+      const { ideaSearch, ...rest } = current;
+      return rest;
+    });
+    setGithubScheduleMessage("Custom title added. Save to apply to GitHub runs.");
+  }
+
+  function removeCustomIdeaTitle(titleValue: string) {
+    updateCustomIdeaTitles(
+      ideaCustomTitleValues.filter((value) => value.toLowerCase() !== titleValue.toLowerCase())
+    );
+  }
+
   function updateRedditSubredditIds(ids: string[]) {
     setRedditSubredditIds([...new Set(ids)]);
     setErrors((current) => {
@@ -2924,7 +3010,8 @@ export default function Home() {
           contentMode: uploadContentMode,
           ideaSearch: {
             creatorIds: selectedIdeaSearch.creatorIds,
-            titleIds: selectedIdeaSearch.titleIds
+            titleIds: selectedIdeaSearch.titleIds,
+            customTitleValues: selectedIdeaSearch.customTitleValues
           },
           redditStory: {
             subredditIds: selectedRedditStorySettings.subredditIds
@@ -2989,7 +3076,8 @@ export default function Home() {
       body: JSON.stringify({
         ideaSearch: {
           creatorIds: selectedIdeaSearch.creatorIds,
-          titleIds: selectedIdeaSearch.titleIds
+          titleIds: selectedIdeaSearch.titleIds,
+          customTitleValues: selectedIdeaSearch.customTitleValues
         }
       })
     });
@@ -4026,77 +4114,175 @@ export default function Home() {
 
               {ideaSearchOpen ? (
                 <div className="filter-menu">
-                  <div className="filter-section">
-                    <div className="filter-section-head">
-                      <div>
-                        <strong>Creators</strong>
-                        <span>{ideaCreatorIds.length} selected</span>
-                      </div>
-                      <div>
-                        <button type="button" onClick={() => setAllIdeaSearchOptions("creator")}>
-                          All
-                        </button>
-                        <button type="button" onClick={() => clearIdeaSearchOptions("creator")}>
-                          Clear
-                        </button>
-                      </div>
-                    </div>
-                    <div className="option-grid">
-                      {CREATOR_SEARCH_OPTIONS.map((option) => {
-                        const checked = ideaCreatorIds.includes(option.id);
-
-                        return (
-                          <label className="option-tile" data-checked={checked} key={option.id}>
-                            <input
-                              type="checkbox"
-                              checked={checked}
-                              onChange={() => toggleIdeaSearchOption("creator", option.id)}
-                            />
-                            <span>{option.label}</span>
-                            <small>{option.group}</small>
-                          </label>
-                        );
-                      })}
-                    </div>
+                  <div className="filter-tabs" role="tablist" aria-label="Ranking search filter tabs">
+                    {IDEA_FILTER_TABS.map((tab) => (
+                      <button
+                        type="button"
+                        role="tab"
+                        aria-selected={ideaFilterTab === tab.id}
+                        data-active={ideaFilterTab === tab.id}
+                        onClick={() => setIdeaFilterTab(tab.id)}
+                        key={tab.id}
+                      >
+                        {tab.label}
+                      </button>
+                    ))}
                   </div>
 
-                  <div className="filter-section">
-                    <div className="filter-section-head">
-                      <div>
-                        <strong>Title styles</strong>
-                        <span>{ideaTitleIds.length} selected</span>
+                  {ideaFilterTab === "creators" ? (
+                    <div className="filter-section">
+                      <div className="filter-section-head">
+                        <div>
+                          <strong>Creators</strong>
+                          <span>
+                            {selectedIdeaSearch.usesCustomTitles
+                              ? "ignored"
+                              : `${ideaCreatorIds.length} selected`}
+                          </span>
+                        </div>
+                        <div>
+                          <button type="button" onClick={() => setAllIdeaSearchOptions("creator")}>
+                            All
+                          </button>
+                          <button type="button" onClick={() => clearIdeaSearchOptions("creator")}>
+                            Clear
+                          </button>
+                        </div>
                       </div>
-                      <div>
-                        <button type="button" onClick={() => setAllIdeaSearchOptions("title")}>
-                          All
-                        </button>
-                        <button type="button" onClick={() => clearIdeaSearchOptions("title")}>
-                          Clear
-                        </button>
-                      </div>
-                    </div>
-                    <div className="option-grid option-grid-compact">
-                      {TITLE_SEARCH_OPTIONS.map((option) => {
-                        const checked = ideaTitleIds.includes(option.id);
+                      <div className="option-grid">
+                        {CREATOR_SEARCH_OPTIONS.map((option) => {
+                          const checked = ideaCreatorIds.includes(option.id);
 
-                        return (
-                          <label className="option-tile" data-checked={checked} key={option.id}>
-                            <input
-                              type="checkbox"
-                              checked={checked}
-                              onChange={() => toggleIdeaSearchOption("title", option.id)}
-                            />
-                            <span>{option.label}</span>
-                            <small>{option.group}</small>
-                          </label>
-                        );
-                      })}
+                          return (
+                            <label className="option-tile" data-checked={checked} key={option.id}>
+                              <input
+                                type="checkbox"
+                                checked={checked}
+                                onChange={() => toggleIdeaSearchOption("creator", option.id)}
+                              />
+                              <span>{option.label}</span>
+                              <small>{option.group}</small>
+                            </label>
+                          );
+                        })}
+                      </div>
                     </div>
-                  </div>
+                  ) : null}
+
+                  {ideaFilterTab === "styles" ? (
+                    <div className="filter-section">
+                      <div className="filter-section-head">
+                        <div>
+                          <strong>Title styles</strong>
+                          <span>
+                            {selectedIdeaSearch.usesCustomTitles
+                              ? "ignored"
+                              : `${ideaTitleIds.length} selected`}
+                          </span>
+                        </div>
+                        <div>
+                          <button type="button" onClick={() => setAllIdeaSearchOptions("title")}>
+                            All
+                          </button>
+                          <button type="button" onClick={() => clearIdeaSearchOptions("title")}>
+                            Clear
+                          </button>
+                        </div>
+                      </div>
+                      <div className="option-grid option-grid-compact">
+                        {TITLE_SEARCH_OPTIONS.map((option) => {
+                          const checked = ideaTitleIds.includes(option.id);
+
+                          return (
+                            <label className="option-tile" data-checked={checked} key={option.id}>
+                              <input
+                                type="checkbox"
+                                checked={checked}
+                                onChange={() => toggleIdeaSearchOption("title", option.id)}
+                              />
+                              <span>{option.label}</span>
+                              <small>{option.group}</small>
+                            </label>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  ) : null}
+
+                  {ideaFilterTab === "custom" ? (
+                    <div className="filter-section custom-title-section">
+                      <div className="filter-section-head">
+                        <div>
+                          <strong>Custom titles</strong>
+                          <span>{selectedIdeaSearch.customTitleValues.length} added</span>
+                        </div>
+                        <div>
+                          <button type="button" onClick={() => updateCustomIdeaTitles([])}>
+                            Clear
+                          </button>
+                        </div>
+                      </div>
+
+                      <form className="custom-title-form" onSubmit={addCustomIdeaTitle}>
+                        <input
+                          value={customIdeaTitleInput}
+                          onChange={(event) => setCustomIdeaTitleInput(event.target.value)}
+                          placeholder="world cup moments"
+                          maxLength={MAX_CUSTOM_TITLE_LENGTH}
+                        />
+                        <button
+                          type="submit"
+                          disabled={
+                            !customIdeaTitleInput.trim() ||
+                            ideaCustomTitleValues.length >= MAX_CUSTOM_TITLE_VALUES
+                          }
+                        >
+                          <Plus size={16} />
+                          Submit
+                        </button>
+                      </form>
+
+                      <div className="custom-title-list">
+                        {selectedIdeaSearch.customTitleValues.length ? (
+                          selectedIdeaSearch.customTitleValues.map((customTitle) => (
+                            <div className="custom-title-row" key={customTitle}>
+                              <span>{customTitle}</span>
+                              <button
+                                type="button"
+                                onClick={() => removeCustomIdeaTitle(customTitle)}
+                                aria-label={`Delete ${customTitle}`}
+                              >
+                                <Trash2 size={15} />
+                              </button>
+                            </div>
+                          ))
+                        ) : (
+                          <div className="custom-title-empty">
+                            Add a full topic to ignore creators and title styles
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  ) : null}
 
                   {ideaSearchError || errors.ideaSearch ? (
                     <small className="error-text">{errors.ideaSearch || ideaSearchError}</small>
                   ) : null}
+
+                  <div className="reddit-filter-save">
+                    <button
+                      type="button"
+                      className="secondary-button compact-button"
+                      onClick={saveGithubSchedule}
+                      disabled={
+                        isSavingGithubSchedule ||
+                        Boolean(parsedDailySchedule.error || ideaSearchError || redditSourceError)
+                      }
+                    >
+                      {isSavingGithubSchedule ? <Loader2 size={17} className="spin" /> : <Github size={17} />}
+                      Save for GitHub runs
+                    </button>
+                  </div>
                 </div>
               ) : null}
             </div>

@@ -817,6 +817,10 @@ async function fetchTrendingTerms() {
 }
 
 function buildSearchIdeas(trendingTerms: string[], ideaSearch: NormalizedIdeaSearchSettings) {
+  if (ideaSearch.usesCustomTitles) {
+    return [...new Set(shuffle(ideaSearch.customTitleValues))];
+  }
+
   const creatorVariants = ideaSearch.titleVariants.length ? ideaSearch.titleVariants : CREATOR_VARIANTS;
   const creatorNames = ideaSearch.creators.length ? ideaSearch.creators : CREATOR_NAMES;
   const creatorIdeas = creatorNames.flatMap((creator) =>
@@ -1327,6 +1331,11 @@ function generatedViralTitle(topic: string) {
   return pickBySeed(templates, `${topic}:${Date.now()}:${Math.random()}`);
 }
 
+function generatedCustomSearchTitle(topic: string) {
+  const clean = cleanTopic(topic).replace(/^top\s*5\s+/i, "").trim();
+  return `Top 5 ${titleCase(clean || topic)}`;
+}
+
 function buildViralDescription(title: string, topic: string, candidates: Candidate[]) {
   const selectedCandidates = candidates.slice(0, 5);
   const [laughEmoji, fireEmoji, shockEmoji] = emojiPack(topic);
@@ -1372,15 +1381,17 @@ function manualSearchLinks(topic: string) {
 function manualFallbackIdea({
   attempts,
   cooldown,
+  directTitle = false,
   reason,
   topic
 }: {
   attempts: SearchAttempt[];
   cooldown?: TikWMCooldown | null;
+  directTitle?: boolean;
   reason: string;
   topic: string;
 }) {
-  const title = generatedViralTitle(topic);
+  const title = directTitle ? generatedCustomSearchTitle(topic) : generatedViralTitle(topic);
   const { description, hashtags } = buildViralDescription(title, topic, []);
 
   return {
@@ -1441,6 +1452,7 @@ export async function POST(request: NextRequest) {
       manualFallbackIdea({
         attempts,
         cooldown,
+        directTitle: ideaSearch.usesCustomTitles,
         reason: `${cooldown.reason} Try again after the cooldown, or use the manual search links below.`,
         topic: fallbackTopic
       })
@@ -1476,6 +1488,7 @@ export async function POST(request: NextRequest) {
             manualFallbackIdea({
               attempts,
               cooldown: nextCooldown,
+              directTitle: ideaSearch.usesCustomTitles,
               reason: `${error.message} Automated TikTok search is paused to avoid repeated rate-limit hits.`,
               topic: idea
             })
@@ -1502,7 +1515,9 @@ export async function POST(request: NextRequest) {
   if (selectedIdea) {
     rememberTopic(selectedIdea.idea);
     rememberCandidateIds(selectedIdea.candidates.slice(0, 5).map((candidate) => candidate.id));
-    const title = generatedViralTitle(selectedIdea.idea);
+    const title = ideaSearch.usesCustomTitles
+      ? generatedCustomSearchTitle(selectedIdea.idea)
+      : generatedViralTitle(selectedIdea.idea);
     const { description, hashtags } = buildViralDescription(
       title,
       selectedIdea.idea,
@@ -1516,6 +1531,8 @@ export async function POST(request: NextRequest) {
         ? "Google Trends + TikWM search"
         : selectedIdea.cacheHit
           ? "Cached TikTok candidates"
+          : ideaSearch.usesCustomTitles
+            ? "Custom ranking topic + TikWM search"
           : "Viral topic fallback + TikWM search",
       description,
       hashtags,
@@ -1536,6 +1553,7 @@ export async function POST(request: NextRequest) {
     manualFallbackIdea({
       attempts,
       cooldown: null,
+      directTitle: ideaSearch.usesCustomTitles,
       reason:
         "TikWM did not return five usable candidates within the safe search limit. Use the manual search links below instead of retrying repeatedly.",
       topic: fallbackTopic

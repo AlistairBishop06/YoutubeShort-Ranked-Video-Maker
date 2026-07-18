@@ -400,6 +400,34 @@ h2 {
   padding: 12px;
 }
 
+.filter-tabs {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  min-height: 38px;
+  gap: 4px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.05);
+  padding: 4px;
+}
+
+.filter-tabs button {
+  min-width: 0;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 0.75rem;
+  font-weight: 950;
+  padding: 8px 6px;
+}
+
+.filter-tabs button[data-active="true"] {
+  background: var(--accent);
+  color: #06100b;
+}
+
 .filter-section {
   display: grid;
   gap: 10px;
@@ -506,6 +534,100 @@ h2 {
   font-size: 0.68rem;
   font-weight: 900;
   line-height: 1.1;
+}
+
+.custom-title-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+}
+
+.custom-title-form input {
+  min-width: 0;
+  min-height: 42px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(0, 0, 0, 0.26);
+  color: var(--text);
+  font-weight: 850;
+  outline: none;
+  padding: 0 12px;
+}
+
+.custom-title-form input:focus {
+  border-color: rgba(57, 255, 136, 0.6);
+}
+
+.custom-title-form button,
+.custom-title-row button {
+  display: inline-flex;
+  min-height: 42px;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text);
+  cursor: pointer;
+  font-size: 0.76rem;
+  font-weight: 950;
+  padding: 0 12px;
+}
+
+.custom-title-form button:not(:disabled):hover,
+.custom-title-row button:not(:disabled):hover {
+  border-color: rgba(57, 255, 136, 0.48);
+  color: var(--accent);
+}
+
+.custom-title-form button:disabled {
+  cursor: not-allowed;
+  opacity: 0.52;
+}
+
+.custom-title-list {
+  display: grid;
+  max-height: 210px;
+  gap: 8px;
+  overflow: auto;
+  padding-right: 3px;
+}
+
+.custom-title-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  border: 1px solid rgba(57, 255, 136, 0.24);
+  border-radius: 12px;
+  background: rgba(57, 255, 136, 0.08);
+  padding: 6px 6px 6px 12px;
+}
+
+.custom-title-row span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--text);
+  font-size: 0.82rem;
+  font-weight: 950;
+  line-height: 1.15;
+}
+
+.custom-title-row button {
+  width: 38px;
+  min-height: 34px;
+  padding: 0;
+}
+
+.custom-title-empty {
+  border: 1px dashed var(--line);
+  border-radius: 12px;
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 900;
+  padding: 12px;
 }
 
 .schedule-row {
@@ -1422,6 +1544,7 @@ h2 {
   .upload-content-mode,
   .schedule-row,
   .github-schedule-panel,
+  .custom-title-form,
   .form-grid,
   .entry-card,
   .entry-fields,

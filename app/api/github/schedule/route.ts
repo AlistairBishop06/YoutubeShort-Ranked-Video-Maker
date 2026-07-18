@@ -2,7 +2,9 @@ import { NextRequest, NextResponse } from "next/server";
 import {
   DEFAULT_IDEA_SEARCH_SETTINGS,
   normalizeIdeaSearchSettings,
+  parseIdeaCustomTitleList,
   parseIdeaSearchIdList,
+  stringifyIdeaCustomTitleList,
   type IdeaSearchSettingsInput
 } from "../../../lib/idea-options";
 import {
@@ -19,6 +21,7 @@ const VARIABLE_NAMES = {
   contentMode: "UPLOAD_CONTENT_MODE",
   ideaCreators: "UPLOAD_IDEA_CREATOR_IDS",
   ideaTitles: "UPLOAD_IDEA_TITLE_IDS",
+  ideaCustomTitles: "UPLOAD_IDEA_CUSTOM_TITLES",
   redditSubreddits: "UPLOAD_STORY_SUBREDDIT_IDS",
   lastSlot: "LAST_UPLOAD_SLOT",
   times: "UPLOAD_SCHEDULE_TIMES",
@@ -249,19 +252,30 @@ export async function GET() {
   }
 
   try {
-    const [enabled, contentModeValue, times, timezone, ideaCreators, ideaTitles, redditSubreddits] = await Promise.all([
+    const [
+      enabled,
+      contentModeValue,
+      times,
+      timezone,
+      ideaCreators,
+      ideaTitles,
+      ideaCustomTitles,
+      redditSubreddits
+    ] = await Promise.all([
       readOptionalVariable(VARIABLE_NAMES.enabled),
       readOptionalVariable(VARIABLE_NAMES.contentMode),
       readOptionalVariable(VARIABLE_NAMES.times),
       readOptionalVariable(VARIABLE_NAMES.timezone),
       readOptionalVariable(VARIABLE_NAMES.ideaCreators),
       readOptionalVariable(VARIABLE_NAMES.ideaTitles),
+      readOptionalVariable(VARIABLE_NAMES.ideaCustomTitles),
       readOptionalVariable(VARIABLE_NAMES.redditSubreddits)
     ]);
     const lastSlot = await readOptionalVariable(VARIABLE_NAMES.lastSlot);
     const ideaSearch = normalizeIdeaSearchSettings({
       creatorIds: parseIdeaSearchIdList(ideaCreators),
-      titleIds: parseIdeaSearchIdList(ideaTitles)
+      titleIds: parseIdeaSearchIdList(ideaTitles),
+      customTitleValues: parseIdeaCustomTitleList(ideaCustomTitles)
     });
     const redditStory = normalizeRedditStorySettings({
       subredditIds: parseRedditSubredditIdList(redditSubreddits)
@@ -275,7 +289,8 @@ export async function GET() {
         contentMode: normalizeContentMode(contentModeValue),
         ideaSearch: {
           creatorIds: ideaSearch.creatorIds,
-          titleIds: ideaSearch.titleIds
+          titleIds: ideaSearch.titleIds,
+          customTitleValues: ideaSearch.customTitleValues
         },
         redditStory: {
           subredditIds: redditStory.subredditIds
@@ -320,6 +335,10 @@ export async function POST(request: NextRequest) {
     await upsertVariable(VARIABLE_NAMES.contentMode, contentMode);
     await upsertVariable(VARIABLE_NAMES.ideaCreators, ideaSearch.creatorIds.join(","));
     await upsertVariable(VARIABLE_NAMES.ideaTitles, ideaSearch.titleIds.join(","));
+    await upsertVariable(
+      VARIABLE_NAMES.ideaCustomTitles,
+      stringifyIdeaCustomTitleList(ideaSearch.customTitleValues)
+    );
     await upsertVariable(VARIABLE_NAMES.redditSubreddits, redditStory.subredditIds.join(","));
     await upsertVariable(VARIABLE_NAMES.times, parsed.times.join(","));
     await upsertVariable(VARIABLE_NAMES.timezone, timezone);
@@ -331,7 +350,8 @@ export async function POST(request: NextRequest) {
         contentMode,
         ideaSearch: {
           creatorIds: ideaSearch.creatorIds,
-          titleIds: ideaSearch.titleIds
+          titleIds: ideaSearch.titleIds,
+          customTitleValues: ideaSearch.customTitleValues
         },
         redditStory: {
           subredditIds: redditStory.subredditIds
